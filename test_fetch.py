@@ -9,13 +9,13 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="nba_api")
 
 # ===========================
-# ⚙️ 測試設定區 (機關槍模式)
+# ⚙️ 測試設定區 (擴大撒網模式)
 # ===========================
 TEST_SEASON = '2025-26'
 SEASON_TYPE = 'Regular Season'
 MEASURE_TYPE = 'Base'
-TIMEOUT_SECONDS = 5    # 【關鍵修改】耐心降到 5 秒！連不上就馬上丟掉，不浪費時間
-MAX_PROXY_TRIES = 50   # 【關鍵修改】測試數量拉高到 50 個！用數量換取成功率
+TIMEOUT_SECONDS = 12   # 【修改】耐心提高到 12 秒，給慢吞吞的 Proxy 一點機會
+MAX_PROXY_TRIES = 100  # 【修改】數量拉高到 100 個！
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
