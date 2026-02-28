@@ -1,5 +1,6 @@
 import pandas as pd
 import os
+import requests
 import random
 from nba_api.stats.endpoints import teamgamelogs
 import warnings
@@ -8,7 +9,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="nba_api")
 
 # ===========================
-# ⚙️ 測試設定區 (專屬 Proxy 版)
+# ⚙️ 測試設定區 (雙重驗證版)
 # ===========================
 TEST_SEASON = '2025-26'
 SEASON_TYPE = 'Regular Season'
@@ -31,35 +32,53 @@ def get_headers():
         'x-nba-stats-token': 'true',
     }
 
-def fetch_with_private_proxy():
-    # 🔑 從 GitHub Secrets (環境變數) 讀取你的專屬 Proxy
+def test_and_fetch():
     proxy_url = os.environ.get('PROXY_URL')
     
     if not proxy_url:
         print("❌ 找不到 PROXY_URL 環境變數！請確認是否已在 GitHub Secrets 設定。")
         return pd.DataFrame()
 
-    print(f"📡 使用私人專屬 Proxy 連線 NBA API 獲取 {TEST_SEASON} 數據...")
-    
+    # 🔥 關鍵修復：直接將 Proxy 寫入系統環境變數，這樣底層的 requests 就能最完美地處理它
+    os.environ['HTTP_PROXY'] = proxy_url
+    os.environ['HTTPS_PROXY'] = proxy_url
+
+    # ==========================================
+    # 步驟一：先測試 Proxy 到底有沒有通
+    # ==========================================
+    print(f"🔍 步驟一：測試 Webshare Proxy 連線是否正常...")
     try:
+        # 連到一個專門用來測試 IP 的網站
+        res = requests.get('https://httpbin.org/ip', timeout=15)
+        print(f"✅ Proxy 測試成功！目前對外偽裝的 IP 是: {res.json().get('origin')}")
+    except Exception as e:
+        print(f"❌ Proxy 測試失敗，連不上 Webshare: {e}")
+        print("👉 診斷建議：請檢查 GitHub Secrets 裡的 PROXY_URL 格式是否為：http://帳號:密碼@IP:Port (開頭一定要有 http://)")
+        return pd.DataFrame()
+
+    # ==========================================
+    # 步驟二：測試 NBA API
+    # ==========================================
+    print(f"\n📡 步驟二：使用私人 Proxy 連線 NBA API 獲取 {TEST_SEASON} 數據...")
+    try:
+        # 注意：我們不再傳入 proxy=proxy_url，因為上面已經設定了全域環境變數
         logs = teamgamelogs.TeamGameLogs(
             season_nullable=TEST_SEASON,
             season_type_nullable=SEASON_TYPE,
             measure_type_player_game_logs_nullable=MEASURE_TYPE,
             headers=get_headers(),
-            timeout=TIMEOUT_SECONDS,
-            proxy=proxy_url
+            timeout=TIMEOUT_SECONDS
         )
         df = logs.get_data_frames()[0]
-        print("✅ 成功突圍！取得數據！")
+        print("✅ 成功突圍！取得 NBA 數據！")
         return df
     except Exception as e:
-        print(f"❌ 失敗: {e}")
+        print(f"❌ NBA API 抓取失敗: {e}")
         return pd.DataFrame()
 
 if __name__ == "__main__":
-    print("🚀 啟動 NBA 數據爬蟲 (私人專屬 Proxy 版)")
-    df = fetch_with_private_proxy()
+    print("🚀 啟動 NBA 數據爬蟲 (Proxy 雙重診斷版)")
+    df = test_and_fetch()
     
     if not df.empty:
         print("\n📊 成功解析數據！資料總筆數:", len(df))
@@ -72,5 +91,3 @@ if __name__ == "__main__":
             print(team_df[display_cols].head(5).to_markdown(index=False))
         else:
             print(f"⚠️ 找不到 {target_team} 的資料，顯示前 5 筆：\n", df.head(5))
-    else:
-        print("\n❌ 抓取失敗，請檢查 Proxy 設定。")
