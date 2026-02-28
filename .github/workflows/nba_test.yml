@@ -27,7 +27,7 @@ jobs:
     - name: Run Entire NBA Pipeline
       env:
         PROXY_URL: ${{ secrets.PROXY_URL }}
-      run: python run_pipeline.py 
+      run: python src/run_pipeline.py
 
     # 💾 把跑完產生的所有新資料與模型存回 GitHub
     - name: Commit and Push Results
