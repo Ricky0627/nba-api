@@ -9,13 +9,13 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="nba_api")
 
 # ===========================
-# ⚙️ 測試設定區
+# ⚙️ 測試設定區 (機關槍模式)
 # ===========================
 TEST_SEASON = '2025-26'
 SEASON_TYPE = 'Regular Season'
 MEASURE_TYPE = 'Base'
-TIMEOUT_SECONDS = 15  # 縮短超時時間，免費 Proxy 連不上就趕快換下一個
-MAX_PROXY_TRIES = 15  # 最多測試 15 個不同的 Proxy
+TIMEOUT_SECONDS = 5    # 【關鍵修改】耐心降到 5 秒！連不上就馬上丟掉，不浪費時間
+MAX_PROXY_TRIES = 50   # 【關鍵修改】測試數量拉高到 50 個！用數量換取成功率
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -35,20 +35,27 @@ def get_headers():
     }
 
 def get_free_proxies():
-    """從開源庫自動抓取最新的免費 Proxy 列表"""
+    """從多個開源庫自動抓取最新的免費 Proxy 列表"""
     print("🔍 正在從網路獲取免費 Proxy 列表...")
-    try:
-        # 使用一個時常更新的 GitHub 免費 Proxy 清單
-        url = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
-        res = requests.get(url, timeout=10)
-        proxies = res.text.strip().split('\n')
-        # 過濾出格式正確的 IP:Port
-        valid_proxies = [p for p in proxies if ':' in p]
-        print(f"✅ 成功獲取 {len(valid_proxies)} 個 Proxy！將隨機抽取 {MAX_PROXY_TRIES} 個進行突圍測試。")
-        return random.sample(valid_proxies, MAX_PROXY_TRIES)
-    except Exception as e:
-        print(f"❌ 獲取 Proxy 清單失敗: {e}")
-        return []
+    proxies = set()
+    urls = [
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
+    ]
+    
+    for url in urls:
+        try:
+            res = requests.get(url, timeout=10)
+            lines = res.text.strip().split('\n')
+            for line in lines:
+                if ':' in line:
+                    proxies.add(line.strip())
+        except:
+            pass
+            
+    valid_proxies = list(proxies)
+    print(f"✅ 成功獲取 {len(valid_proxies)} 個 Proxy！將隨機抽取 {MAX_PROXY_TRIES} 個進行快速掃射。")
+    return random.sample(valid_proxies, min(MAX_PROXY_TRIES, len(valid_proxies)))
 
 def fetch_with_proxy(season, season_type, measure_type):
     proxies = get_free_proxies()
@@ -58,12 +65,10 @@ def fetch_with_proxy(season, season_type, measure_type):
     print(f"\n📡 開始嘗試連線 NBA API 獲取 {season} 數據...")
     
     for i, proxy_ip in enumerate(proxies, 1):
-        # 組合出正確的 proxy 格式
         proxy_url = f"http://{proxy_ip}"
-        print(f"[{i}/{MAX_PROXY_TRIES}] 🔄 嘗試替身 IP: {proxy_url} ...", end=" ")
+        print(f"[{i:02d}/{MAX_PROXY_TRIES}] 🔄 測試 IP: {proxy_url:<25}", end=" ")
         
         try:
-            # 這裡把 proxy 傳給 nba_api
             logs = teamgamelogs.TeamGameLogs(
                 season_nullable=season,
                 season_type_nullable=season_type,
@@ -72,18 +77,21 @@ def fetch_with_proxy(season, season_type, measure_type):
                 timeout=TIMEOUT_SECONDS,
                 proxy=proxy_url
             )
-            print("✅ 成功突圍！取得數據！")
-            return logs.get_data_frames()[0]
-            
-        except Exception as e:
-            # 簡化錯誤訊息，因為免費 proxy 失敗是家常便飯
-            error_msg = str(e).split(":")[-1].strip()[:30]
-            print(f"❌ 失敗 ({error_msg})，換下一個")
+            df = logs.get_data_frames()[0]
+            if not df.empty:
+                print("✅ 成功突圍！取得數據！")
+                return df
+            else:
+                print("⚠️ 連線成功但無數據")
+                
+        except Exception:
+            # 隱藏那些雜亂的錯誤訊息，保持畫面乾淨
+            print("❌ 失敗 (無效或超時)")
             
     return pd.DataFrame()
 
 if __name__ == "__main__":
-    print("🚀 啟動 NBA 數據爬蟲 (自動 Proxy 突圍版)")
+    print("🚀 啟動 NBA 數據爬蟲 (機關槍掃射突圍版)")
     
     df = fetch_with_proxy(TEST_SEASON, SEASON_TYPE, MEASURE_TYPE)
     
