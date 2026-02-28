@@ -1,7 +1,11 @@
 name: NBA Daily MLOps Pipeline
 
 on:
-  workflow_dispatch: # 手動觸發
+  schedule:
+    # 每天早上 10 點 (台灣時間) 自動跑一次 (UTC 2:00)
+    - cron: '0 7 * * *'
+  workflow_dispatch: 
+    # 允許手動從網頁按鈕觸發
 
 jobs:
   daily_update:
@@ -23,21 +27,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy requests bs4 urllib3 tqdm nba_api catboost scikit-learn
 
-    # 🚀 除錯模式：跳過爬蟲，只單獨執行 generate_injury.py
-    - name: Run generate_injury.py ONLY
+    # 🚀 執行完整的自動化管線 (包含所有爬蟲、特徵工程與模型訓練)
+    - name: Run Entire NBA Pipeline
       env:
-        # 告訴 Python 也要去 src 資料夾裡面找模組 (解決找不到 prepare_data 的問題)
-        PYTHONPATH: src 
-      run: python src/generate_injury.py 
+        PROXY_URL: ${{ secrets.PROXY_URL }}
+        PYTHONPATH: src
+      run: python src/run_pipeline.py 
 
-    # 💾 只上傳這個特徵檔案，看看有沒有成功產出
+    # 💾 把跑完產生的所有新資料、特徵與模型存回 GitHub
     - name: Commit and Push Results
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # 只把這個檔案加入追蹤
+        # 加入所有會更新的檔案 (加上 || true 避免檔案沒變動時報錯)
+        git add data/nba_current.db || true
         git add nba_advanced_injury_features.csv || true
+        git add nba_daily_walkforward_predictions.csv || true
+        git add nba_daily_walkforward_summary.csv || true
+        git add models/ || true
         
-        git commit -m "🤖 [Debug] Test generate_injury.py only" || echo "No changes to commit"
+        git commit -m "🤖 [MLOps] Daily Auto-Update: Data, Features & Models" || echo "No changes to commit"
         git push
