@@ -11,7 +11,7 @@ from nba_daily_backtest import load_prepared_data
 # ==========================================
 # ⚙️ 窮舉測試設定區
 # ==========================================
-OUTPUT_FILE = "exhaustive_search_results.csv"
+OUTPUT_FILE = "exhaustive_search_results_8to11.csv"
 TEST_SEASON = '2025-26'
 CONFIDENCE_THRESHOLD = 0.5
 
@@ -55,16 +55,11 @@ def run_exhaustive_search():
     
     print(f"📊 基準資料清洗完成！訓練集: {len(train_df)} 場 | 測試集: {len(test_df)} 場")
     
-    # 3. 產生 1 到 7 個模組的所有組合
+    # 3. 產生 8 到 11 個模組的所有組合 (進階大特徵池)
     block_names = list(FEATURE_BLOCKS.keys())
     all_combinations = []
-    for r in range(1, 8):  # 組合長度 1 ~ 7
+    for r in range(8, 12):  # 組合長度 8 ~ 11
         all_combinations.extend(list(itertools.combinations(block_names, r)))
-        
-    print(f"🔥 即將測試 {len(all_combinations)} 種特徵組合，這可能需要幾十分鐘...")
-    
-    results = []
-    start_time = time.time()
 
     # 4. 開始暴力窮舉迴圈
     for idx, combo in enumerate(tqdm(all_combinations, desc="訓練模型中")):
