@@ -1,7 +1,6 @@
 import pandas as pd
-import time
+import os
 import random
-import requests
 from nba_api.stats.endpoints import teamgamelogs
 import warnings
 
@@ -9,18 +8,16 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="nba_api")
 
 # ===========================
-# ⚙️ 測試設定區 (擴大撒網模式)
+# ⚙️ 測試設定區 (專屬 Proxy 版)
 # ===========================
 TEST_SEASON = '2025-26'
 SEASON_TYPE = 'Regular Season'
 MEASURE_TYPE = 'Base'
-TIMEOUT_SECONDS = 12   # 【修改】耐心提高到 12 秒，給慢吞吞的 Proxy 一點機會
-MAX_PROXY_TRIES = 100  # 【修改】數量拉高到 100 個！
+TIMEOUT_SECONDS = 30  
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15'
 ]
 
 def get_headers():
@@ -34,66 +31,35 @@ def get_headers():
         'x-nba-stats-token': 'true',
     }
 
-def get_free_proxies():
-    """從多個開源庫自動抓取最新的免費 Proxy 列表"""
-    print("🔍 正在從網路獲取免費 Proxy 列表...")
-    proxies = set()
-    urls = [
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all"
-    ]
+def fetch_with_private_proxy():
+    # 🔑 從 GitHub Secrets (環境變數) 讀取你的專屬 Proxy
+    proxy_url = os.environ.get('PROXY_URL')
     
-    for url in urls:
-        try:
-            res = requests.get(url, timeout=10)
-            lines = res.text.strip().split('\n')
-            for line in lines:
-                if ':' in line:
-                    proxies.add(line.strip())
-        except:
-            pass
-            
-    valid_proxies = list(proxies)
-    print(f"✅ 成功獲取 {len(valid_proxies)} 個 Proxy！將隨機抽取 {MAX_PROXY_TRIES} 個進行快速掃射。")
-    return random.sample(valid_proxies, min(MAX_PROXY_TRIES, len(valid_proxies)))
-
-def fetch_with_proxy(season, season_type, measure_type):
-    proxies = get_free_proxies()
-    if not proxies:
+    if not proxy_url:
+        print("❌ 找不到 PROXY_URL 環境變數！請確認是否已在 GitHub Secrets 設定。")
         return pd.DataFrame()
 
-    print(f"\n📡 開始嘗試連線 NBA API 獲取 {season} 數據...")
+    print(f"📡 使用私人專屬 Proxy 連線 NBA API 獲取 {TEST_SEASON} 數據...")
     
-    for i, proxy_ip in enumerate(proxies, 1):
-        proxy_url = f"http://{proxy_ip}"
-        print(f"[{i:02d}/{MAX_PROXY_TRIES}] 🔄 測試 IP: {proxy_url:<25}", end=" ")
-        
-        try:
-            logs = teamgamelogs.TeamGameLogs(
-                season_nullable=season,
-                season_type_nullable=season_type,
-                measure_type_player_game_logs_nullable=measure_type,
-                headers=get_headers(),
-                timeout=TIMEOUT_SECONDS,
-                proxy=proxy_url
-            )
-            df = logs.get_data_frames()[0]
-            if not df.empty:
-                print("✅ 成功突圍！取得數據！")
-                return df
-            else:
-                print("⚠️ 連線成功但無數據")
-                
-        except Exception:
-            # 隱藏那些雜亂的錯誤訊息，保持畫面乾淨
-            print("❌ 失敗 (無效或超時)")
-            
-    return pd.DataFrame()
+    try:
+        logs = teamgamelogs.TeamGameLogs(
+            season_nullable=TEST_SEASON,
+            season_type_nullable=SEASON_TYPE,
+            measure_type_player_game_logs_nullable=MEASURE_TYPE,
+            headers=get_headers(),
+            timeout=TIMEOUT_SECONDS,
+            proxy=proxy_url
+        )
+        df = logs.get_data_frames()[0]
+        print("✅ 成功突圍！取得數據！")
+        return df
+    except Exception as e:
+        print(f"❌ 失敗: {e}")
+        return pd.DataFrame()
 
 if __name__ == "__main__":
-    print("🚀 啟動 NBA 數據爬蟲 (機關槍掃射突圍版)")
-    
-    df = fetch_with_proxy(TEST_SEASON, SEASON_TYPE, MEASURE_TYPE)
+    print("🚀 啟動 NBA 數據爬蟲 (私人專屬 Proxy 版)")
+    df = fetch_with_private_proxy()
     
     if not df.empty:
         print("\n📊 成功解析數據！資料總筆數:", len(df))
@@ -107,4 +73,4 @@ if __name__ == "__main__":
         else:
             print(f"⚠️ 找不到 {target_team} 的資料，顯示前 5 筆：\n", df.head(5))
     else:
-        print("\n❌ 突圍失敗：測試的 Proxy 全部失效，請再觸發一次 Action 試試看。")
+        print("\n❌ 抓取失敗，請檢查 Proxy 設定。")
