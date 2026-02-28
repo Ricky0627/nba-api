@@ -3,9 +3,6 @@ name: Test NBA API Fetcher
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  # 允許你從 GitHub 網頁手動觸發測試
   workflow_dispatch: 
 
 jobs:
@@ -27,4 +24,6 @@ jobs:
         pip install pandas nba_api requests urllib3 tabulate
 
     - name: Run NBA Data Fetcher Test
+      env:
+        PROXY_URL: ${{ secrets.PROXY_URL }}   # 👈 關鍵：把保險箱的變數傳給 Python
       run: python test_fetch.py
