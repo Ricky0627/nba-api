@@ -120,8 +120,12 @@ def generate_features():
     
     # 讀取缺席表 (從合體模組)
     inactive_full = get_merged_dataframe("inactive_players")
-    inactive = inactive_full[['GAME_ID', 'TEAM_ID', 'PLAYER_ID']].copy()
-    inactive = inactive.rename(columns={'GAME_ID': 'game_id', 'TEAM_ID': 'team_id'})
+    
+    # 🔥 關鍵修復：因為 inactive_players 表的欄位是小寫，所以這裡要用小寫讀取！
+    inactive = inactive_full[['game_id', 'team_id', 'player_id']].copy()
+    
+    # 把 player_id 轉成大寫，好讓後面可以跟歷史數據 (lookup_df) 合併
+    inactive = inactive.rename(columns={'player_id': 'PLAYER_ID'})
     
     # 讀取比賽日期 (從合體模組)
     games_full = get_merged_dataframe("games")
