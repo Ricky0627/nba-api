@@ -1,4 +1,4 @@
-name: NBA Top 10 Daily Backtest
+name: NBA V2 Feature Exhaustive Search
 
 on:
   workflow_dispatch: 
@@ -23,21 +23,21 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy requests bs4 urllib3 tqdm nba_api catboost scikit-learn
 
-    # 🚀 執行我們剛寫好的十大模型逐日回測
-    - name: Run Top 10 Daily Backtest
+    # 🚀 執行全新的 V2 實驗腳本！
+    - name: Run V2 Exhaustive Search (Takes 30-50 mins)
       env:
         PROXY_URL: ${{ secrets.PROXY_URL }}
         PYTHONPATH: src
-      run: python src/top10_daily_backtest.py 
+      run: python src/exhaustive_search_v2.py 
 
-    # 💾 把跑出來的排行榜 CSV 存回 GitHub
+    # 💾 把 V2 產生的排行榜 CSV 存回 GitHub
     - name: Commit and Push Ranking Report
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # 只推送這個報告檔案
-        git add top10_daily_backtest_results.csv || true
+        # 只推送 V2 產生的新報告
+        git add exhaustive_search_v2_results.csv || true
         
-        git commit -m "🔬 [Experiment] Top 10 Daily Backtest Completed" || echo "No changes to commit"
+        git commit -m "🔬 [Experiment] V2 Exhaustive Feature Search Completed" || echo "No changes to commit"
         git push
