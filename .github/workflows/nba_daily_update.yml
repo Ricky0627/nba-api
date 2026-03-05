@@ -4,7 +4,7 @@ on:
   # ⏰ 排程觸發：每天 UTC 11:00 執行 (美東早上 07:00 / 台灣晚上 19:00)
   # 這個時間點美國昨晚的比賽一定都結算了，PlaySport 通常也已經開出明天的新盤
   schedule:
-    - cron: '0 08 * * *'
+    - cron: '0 11 * * *'
   
   # 🚀 手動觸發：讓你在 GitHub 網頁上可以隨時點擊按鈕強制執行
   workflow_dispatch: 
@@ -65,4 +65,4 @@ jobs:
       with:
         name: nba-daily-data
         path: data/
-        retention-days: 7 # 雲端備份保留 7 天，方便你隨時下載除錯 
+        retention-days: 7 # 雲端備份保留 7 天，方便你隨時下載除錯
