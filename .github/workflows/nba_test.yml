@@ -1,46 +1,68 @@
-name: NBA Daily MLOps Pipeline
+name: NBA Daily AI Pipeline
 
 on:
-  workflow_dispatch: # 👈 只保留這個！這代表必須由你在 GitHub 網頁上手動點擊按鈕才會執行
+  # ⏰ 排程觸發：每天 UTC 11:00 執行 (美東早上 07:00 / 台灣晚上 19:00)
+  # 這個時間點美國昨晚的比賽一定都結算了，PlaySport 通常也已經開出明天的新盤
+  schedule:
+    - cron: '0 08 * * *'
+  
+  # 🚀 手動觸發：讓你在 GitHub 網頁上可以隨時點擊按鈕強制執行
+  workflow_dispatch: 
 
 jobs:
-  daily_update:
+  daily-update:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    
     steps:
-    - name: Check out repository
+    - name: 📥 取得程式碼 (Checkout repository)
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: 🐍 設定 Python 3.10 環境
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip' # 快取 pip，讓每天安裝套件的速度飛快
 
-    - name: Install dependencies
+    - name: 📦 安裝必備套件 (Install dependencies)
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy requests bs4 urllib3 tqdm nba_api catboost scikit-learn
+        # 直接安裝我們腳本中需要的所有套件
+        pip install pandas numpy nba_api beautifulsoup4 requests pytz tqdm curl_cffi
+        
+        # 如果你有寫 requirements.txt，也可以把上面那行註解掉，改用下面這行：
+        # pip install -r requirements.txt
 
-    # 🚀 直接呼叫你的總控台腳本！
-    - name: Run Entire NBA Pipeline
+    - name: 🤖 啟動 NBA 每日更新管線 (Run Pipeline)
       env:
+        # 🔑 從 GitHub Secrets 讀取你的 Webshare Proxy 帳密，避免外洩
         PROXY_URL: ${{ secrets.PROXY_URL }}
-      run: python run_pipeline.py 
-
-    # 💾 把跑完產生的所有新資料與模型存回 GitHub
-    - name: Commit and Push Results
       run: |
+        # 確保 data 資料夾存在，避免腳本找不到路徑報錯
+        mkdir -p data
+        
+        # 執行大腦總指揮腳本
+        python src/run_pipeline.py
+
+    - name: 💾 將更新後的資料存回 GitHub (Commit & Push)
+      run: |
+        # 設定 Git 機器人身分
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
-        # 加入更新後的檔案
-        git add data/nba_current.db
-        git add nba_advanced_injury_features.csv
-        git add nba_daily_walkforward_predictions.csv
-        git add nba_daily_walkforward_summary.csv
-        git add models/
+        # 將 data 資料夾底下有變動的核心檔案加入暫存區
+        # (使用 force 強制加入，以防你不小心把它們寫進 .gitignore)
+        git add -f data/nba_current.db
+        git add -f data/current_play_by_play.csv
+        git add -f data/nba_advanced_injury_features.csv
+        git add -f data/upcoming_games.csv
         
-        git commit -m "🤖 [MLOps] Manual Update: Data, Features & Models" || echo "No changes to commit"
-        git push
+        # 檢查是否有變更，有的話就 Commit 並 Push 回去
+        # [skip ci] 標籤可避免這次 push 又無限迴圈觸發 Action
+        git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Auto-update NBA data & AI features [skip ci]" && git push)
+        
+    - name: 📤 備份資料包 (Upload Artifacts)
+      uses: actions/upload-artifact@v4
+      with:
+        name: nba-daily-data
+        path: data/
+        retention-days: 7 # 雲端備份保留 7 天，方便你隨時下載除錯

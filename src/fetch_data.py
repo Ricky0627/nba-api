@@ -5,6 +5,7 @@ import random
 import os
 import datetime
 import warnings
+import pytz  # 👈 新增：處理時區問題
 from nba_api.stats.endpoints import teamgamelogs
 from requests.exceptions import ReadTimeout, ConnectTimeout, ConnectionError
 from urllib3.exceptions import ProtocolError
@@ -24,6 +25,9 @@ SEASON_TYPES = ['Regular Season', 'Playoffs']
 TIMEOUT_SECONDS = 30             # 使用私人 Proxy，速度快，超時可以縮短
 MAX_RETRIES = 5        
 RETRY_DELAY = 3        
+
+# 👈 新增：設定 NBA 官方時間基準 (美國東岸時間)
+EST_TZ = pytz.timezone('US/Eastern')
 
 # ===========================
 # 🛡️ Proxy 代理伺服器設定
@@ -65,14 +69,16 @@ def init_db():
 
 def is_current_season(season_str):
     start_year = int(season_str.split('-')[0])
-    current_year = datetime.datetime.now().year
+    # 👈 修改：使用美東時間的年份
+    current_year = datetime.datetime.now(EST_TZ).year
     return start_year >= (current_year - 1)
 
 def is_future_playoffs(season_str):
     """🔮 預知未來攔截器：判斷該賽季的季後賽是否還沒開打"""
     start_year = int(season_str.split('-')[0])
     playoff_year = start_year + 1 
-    now = datetime.datetime.now()
+    # 👈 修改：使用美東時間
+    now = datetime.datetime.now(EST_TZ)
     if now.year < playoff_year or (now.year == playoff_year and now.month < 4):
         return True
     return False
@@ -205,7 +211,9 @@ def fetch_season_stats(conn):
                     
                     start_dt = datetime.datetime.strptime(last_date_str, "%m/%d/%Y")
                     start_dt -= datetime.timedelta(days=1) 
-                    end_dt = datetime.datetime.now()
+                    
+                    # 👈 修改：使用美東時間計算抓取迄日，並去掉時區資訊以利迴圈計算
+                    end_dt = datetime.datetime.now(EST_TZ).replace(tzinfo=None)
 
                     date_list = []
                     curr = start_dt
@@ -245,7 +253,6 @@ def fetch_season_stats(conn):
 
 if __name__ == "__main__":
     print(f"🚀 啟動 NBA 數據爬蟲 (雲端全自動更新版)")
-    # 初始化 Proxy
     setup_proxy()
     
     conn = init_db()

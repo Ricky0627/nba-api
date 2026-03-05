@@ -7,9 +7,9 @@ import os
 from prepare_data import get_merged_dataframe
 
 # ==========================================
-# ⚙️ 參數設定
+# ⚙️ 參數設定 (雲端自動化路徑微調)
 # ==========================================
-OUTPUT_CSV = 'nba_advanced_injury_features.csv'
+OUTPUT_CSV = 'data/nba_advanced_injury_features.csv'  # 👈 統一輸出到 data 資料夾
 
 # 滾動窗口設定
 ROLLING_WINDOW_LONG = 20  # 長期實力 (跨賽季)
@@ -210,6 +210,9 @@ def generate_features():
     for feat in base_feats:
         games_final[f'diff_{feat}'] = games_final[f'home_{feat}'] - games_final[f'away_{feat}']
 
+    # 確保輸出目錄存在
+    os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
+    
     # 輸出
     games_final.to_csv(OUTPUT_CSV, index=False)
     print(f"\n✅ 成功匯出: {OUTPUT_CSV}")

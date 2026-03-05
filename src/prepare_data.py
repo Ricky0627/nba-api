@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import urllib.request
+import urllib.error
+import time
 import pandas as pd
 
 # ===========================
@@ -14,15 +16,26 @@ HISTORICAL_DB_PATH = "data/nba_raw_historical.db"
 CURRENT_DB_PATH = "data/nba_current.db"
 
 def download_historical_db():
-    """自動從 GitHub Releases 下載歷史資料庫"""
+    """自動從 GitHub Releases 下載歷史資料庫 (附帶防斷線重試機制)"""
     if not os.path.exists("data"):
         os.makedirs("data")
         
     if not os.path.exists(HISTORICAL_DB_PATH):
         print(f"⬇️ 正在從 GitHub Releases 下載歷史資料庫 (約 663MB)...")
-        # GitHub Actions 的網速極快，通常幾十秒內就能載完
-        urllib.request.urlretrieve(HISTORICAL_DB_URL, HISTORICAL_DB_PATH)
-        print("✅ 歷史資料庫下載完成！")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # GitHub Actions 的網速極快，通常幾十秒內就能載完
+                urllib.request.urlretrieve(HISTORICAL_DB_URL, HISTORICAL_DB_PATH)
+                print("✅ 歷史資料庫下載完成！")
+                break
+            except (urllib.error.URLError, ConnectionResetError) as e:
+                print(f"   ⚠️ 下載中斷 ({e})，正在進行第 {attempt + 1}/{max_retries} 次重試...")
+                time.sleep(5)
+                if attempt == max_retries - 1:
+                    print("❌ 歷史資料庫下載失敗，請檢查網址或網路狀態。")
+                    raise e
     else:
         print("✅ 歷史資料庫已存在本機，跳過下載。")
 
@@ -36,17 +49,19 @@ def get_merged_dataframe(table_name):
     print(f"\n🔄 正在合併資料表: {table_name}")
     
     # --- 1. 讀取歷史資料 (冷資料) ---
-    conn_hist = sqlite3.connect(HISTORICAL_DB_PATH)
+    # 👈 新增：加入 timeout 防止鎖定
+    conn_hist = sqlite3.connect(HISTORICAL_DB_PATH, timeout=15.0)
     
     # 智慧判斷欄位名稱 (應對你資料庫中 SEASON_YEAR 與 season 混用的狀況)
     cursor = conn_hist.cursor()
     cursor.execute(f"PRAGMA table_info({table_name})")
-    columns = [info[1] for info in cursor.fetchall()]
+    # 👈 修改：統一轉大寫，防止 SQLite 大小寫敏感導致判斷失效
+    columns = [info[1].upper() for info in cursor.fetchall()]
     
     if 'SEASON_YEAR' in columns:
         # 排除 2025-26，避免與新資料庫重複
         query_hist = f"SELECT * FROM {table_name} WHERE SEASON_YEAR != '2025-26'"
-    elif 'season' in columns:
+    elif 'SEASON' in columns:
         query_hist = f"SELECT * FROM {table_name} WHERE season != '2025-26'"
     else:
         # 如果是沒有賽季欄位的表 (如 inactive_players)，就全抓
@@ -57,7 +72,8 @@ def get_merged_dataframe(table_name):
     
     # --- 2. 讀取最新資料 (熱資料) ---
     if os.path.exists(CURRENT_DB_PATH):
-        conn_curr = sqlite3.connect(CURRENT_DB_PATH)
+        # 👈 新增：加入 timeout 防止鎖定
+        conn_curr = sqlite3.connect(CURRENT_DB_PATH, timeout=15.0)
         df_curr = pd.read_sql(f"SELECT * FROM {table_name}", conn_curr)
         conn_curr.close()
     else:
@@ -68,7 +84,7 @@ def get_merged_dataframe(table_name):
     df_merged = pd.concat([df_hist, df_curr], ignore_index=True)
     
     # 針對沒有賽季欄位的關聯表，進行去重保護
-    if 'SEASON_YEAR' not in columns and 'season' not in columns:
+    if 'SEASON_YEAR' not in columns and 'SEASON' not in columns:
         df_merged = df_merged.drop_duplicates()
         
     print(f"   📊 歷史: {len(df_hist)} 筆 | 🆕 最新: {len(df_curr)} 筆 | 🚀 總計: {len(df_merged)} 筆")

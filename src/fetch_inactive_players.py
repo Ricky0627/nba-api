@@ -25,6 +25,9 @@ warnings.filterwarnings("ignore")
 # ===========================
 DB_PATH = 'data/nba_current.db'  # 👈 改為讀寫輕量級的新資料庫
 
+# 定義新賽季的 GAME_ID 前綴 (與 CSV 切割一致)
+NEW_SEASON_PREFIXES = ('0025', '00225', '00425')
+
 # === 防鎖定設定 ===
 MAX_WORKERS = 2         # 雲端 Proxy 建議稍微調降並行數，避免連線被 Webshare 視為惡意攻擊
 BASE_DELAY = (0.6, 1.5) 
@@ -69,7 +72,8 @@ def get_headers():
 
 def init_db():
     if not os.path.exists('data'): os.makedirs('data')
-    conn = sqlite3.connect(DB_PATH)
+    # 加入 timeout=15 避免雲端硬碟 I/O 延遲造成的 Database is locked 報錯
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS inactive_players (
@@ -93,12 +97,17 @@ def clean_false_empty_games(conn):
     """自動修復：刪除那些被錯誤標記為 '空' 的 2025-26 賽季比賽"""
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT game_id FROM empty_inactive_games WHERE game_id LIKE '%225%' OR game_id LIKE '%425%'")
-        suspicious_ids = [row[0] for row in cursor.fetchall()]
+        # 使用嚴謹的前綴比對，取代 LIKE '%225%'
+        query = "SELECT game_id FROM empty_inactive_games"
+        cursor.execute(query)
+        all_empty_ids = [row[0] for row in cursor.fetchall()]
+        
+        suspicious_ids = [gid for gid in all_empty_ids if str(gid).startswith(NEW_SEASON_PREFIXES)]
         
         if suspicious_ids:
             print(f"🧹 發現 {len(suspicious_ids)} 場疑似誤判為空的比賽，正在清除重抓...")
-            cursor.execute("DELETE FROM empty_inactive_games WHERE game_id LIKE '%225%' OR game_id LIKE '%425%'")
+            placeholders = ','.join(['?'] * len(suspicious_ids))
+            cursor.execute(f"DELETE FROM empty_inactive_games WHERE game_id IN ({placeholders})", suspicious_ids)
             conn.commit()
     except Exception as e:
         pass
@@ -175,8 +184,8 @@ def fetch_worker(game_id):
     time.sleep(random.uniform(*BASE_DELAY))
     game_id_str = str(game_id)
     
-    # 判斷是否為 2025-26 以後的賽季 (包含例行賽 225 與 季後賽 425)
-    is_new_season = "225" in game_id_str or "425" in game_id_str
+    # 精準判斷是否為 2025-26 以後的賽季
+    is_new_season = game_id_str.startswith(NEW_SEASON_PREFIXES)
     
     df = pd.DataFrame()
     
@@ -264,7 +273,6 @@ def fetch_inactive_players(conn):
 
 if __name__ == "__main__":
     print("🚀 啟動 NBA 傷兵名單爬蟲 (雲端全自動更新版)")
-    # 初始化 Proxy
     setup_proxy()
     
     conn = init_db()

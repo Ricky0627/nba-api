@@ -7,6 +7,7 @@ import datetime
 from datetime import timedelta
 import re
 import os
+import pytz  # 👈 新增：處理時區問題
 
 # ===========================
 # ⚙️ 雲端自動化設定區
@@ -14,6 +15,9 @@ import os
 DB_PATH = 'data/nba_current.db'    # 👈 改為讀寫輕量級的新資料庫
 DEFAULT_START_DATE = "2025-10-15"  # 👈 雲端版只負責 2025-26 當前賽季
 DEFAULT_END_DATE   = "2026-06-30"
+
+# 👈 新增：設定 PlaySport 網站的時間基準 (台灣時間)
+TW_TZ = pytz.timezone('Asia/Taipei')
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -183,9 +187,6 @@ def get_db_date_range():
         # 檢查是否已有賠率數據
         c.execute("SELECT MAX(date) FROM games WHERE tw_spread_score IS NOT NULL")
         last_odds_date = c.fetchone()[0]
-        
-        # 今天的日期
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
 
         if last_odds_date:
             print(f"   ℹ️ 資料庫已有賠率至 {last_odds_date}，將從隔天開始爬取。")
@@ -215,9 +216,9 @@ def crawl_odds_incremental():
     print("🔍 正在檢查資料庫進度...")
     start_date, end_date = get_db_date_range()
     
-    # 防止爬取未來 (PlaySport 最多只會有未來幾天的盤)
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    limit_date = (datetime.datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d") # 最多爬到未來一週
+    # 👈 修改：使用台灣時間計算防止爬取未來的限制
+    today = datetime.datetime.now(TW_TZ).strftime("%Y-%m-%d")
+    limit_date = (datetime.datetime.now(TW_TZ) + timedelta(days=7)).strftime("%Y-%m-%d") # 最多爬到未來一週
     
     if start_date > limit_date:
         print("✅ 賠率資料已是最新，無需更新。")

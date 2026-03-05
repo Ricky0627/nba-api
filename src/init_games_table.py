@@ -14,7 +14,8 @@ def init_games_table():
         print(f"❌ 找不到資料庫 {DB_PATH}")
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    # 👈 新增：加入 timeout=15.0 防止雲端環境連續讀寫時發生鎖定報錯
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     c = conn.cursor()
 
     # 1. 建立 games 表格
@@ -61,9 +62,12 @@ def init_games_table():
     # 去重
     df = df.drop_duplicates(subset=['GAME_ID', 'TEAM_ABBREVIATION'])
     
-    # 分離主客場
-    home_df = df[df['MATCHUP'].str.contains('vs.', na=False)].rename(columns={'TEAM_ABBREVIATION': 'home_team', 'PTS': 'home_score'})
-    away_df = df[df['MATCHUP'].str.contains('@', na=False)].rename(columns={'TEAM_ABBREVIATION': 'away_team', 'PTS': 'away_score'})
+    # 確保 MATCHUP 不是空值，避免 str.contains 報錯
+    df = df.dropna(subset=['MATCHUP'])
+    
+    # 分離主客場 (加上 regex=False 提高執行效率並避免警告)
+    home_df = df[df['MATCHUP'].str.contains('vs.', na=False, regex=False)].rename(columns={'TEAM_ABBREVIATION': 'home_team', 'PTS': 'home_score'})
+    away_df = df[df['MATCHUP'].str.contains('@', na=False, regex=False)].rename(columns={'TEAM_ABBREVIATION': 'away_team', 'PTS': 'away_score'})
     
     merged = pd.merge(
         home_df[['GAME_ID', 'GAME_DATE', 'SEASON_YEAR', 'SEASON_TYPE', 'home_team', 'home_score']],
@@ -72,6 +76,10 @@ def init_games_table():
         how='inner'
     )
     merged['GAME_ID'] = merged['GAME_ID'].astype(str).str.zfill(10)
+
+    # 👈 新增：處理可能為 NaN 的分數 (例如比賽打一半或是資料缺失)，避免轉 int 報錯
+    merged['home_score'] = merged['home_score'].fillna(0).astype(int)
+    merged['away_score'] = merged['away_score'].fillna(0).astype(int)
 
     # 4. 增量寫入
     # 找出 games 表已經有的 ID
@@ -92,7 +100,7 @@ def init_games_table():
     for _, row in new_games.iterrows():
         data_to_insert.append((
             row['GAME_ID'], row['GAME_DATE'], row['SEASON_YEAR'], row['SEASON_TYPE'],
-            row['home_team'], row['away_team'], int(row['home_score']), int(row['away_score'])
+            row['home_team'], row['away_team'], row['home_score'], row['away_score']
         ))
 
     c.executemany('''
