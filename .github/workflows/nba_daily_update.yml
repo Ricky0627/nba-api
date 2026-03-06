@@ -26,11 +26,7 @@ jobs:
     - name: 📦 安裝必備套件 (Install dependencies)
       run: |
         python -m pip install --upgrade pip
-        # 直接安裝我們腳本中需要的所有套件
-        pip install pandas numpy nba_api beautifulsoup4 requests pytz tqdm curl_cffi
-        
-        # 如果你有寫 requirements.txt，也可以把上面那行註解掉，改用下面這行：
-        # pip install -r requirements.txt
+        pip install -r requirements.txt
 
     - name: 🤖 啟動 NBA 每日更新管線 (Run Pipeline)
       env:
