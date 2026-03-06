@@ -1,62 +1,31 @@
 name: NBA Daily AI Pipeline
 
 on:
-  # ⏰ 排程觸發：每天 UTC 11:00 執行 (美東早上 07:00 / 台灣晚上 19:00)
-  schedule:
-    - cron: '0 11 * * *'
-  
-  # 🚀 手動觸發：讓你在 GitHub 網頁上可以隨時點擊按鈕強制執行
-  workflow_dispatch: 
+  workflow_dispatch: # 只有手動觸發，方便除錯
 
 jobs:
-  daily-update:
+  debug-fetch-games:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 📥 取得程式碼 (Checkout repository)
+    - name: 📥 取得程式碼
       uses: actions/checkout@v4
 
-    - name: 🐍 設定 Python 3.10 環境
+    - name: 🐍 設定 Python 3.10 
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         cache: 'pip'
 
-    - name: 📦 安裝必備套件 (Install dependencies)
+    - name: 📦 安裝套件
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: 🤖 啟動 NBA 每日更新管線 (Run Pipeline)
+    - name: 🐛 測試抓取今日賽程 (fetch_games.py)
       env:
-        # 🔑 讀取 Proxy 密碼
         PROXY_URL: ${{ secrets.PROXY_URL }}
+        PROXY_URL2: ${{ secrets.PROXY_URL2 }} # 注入新密碼
       run: |
-        # 確保 data 資料夾存在
         mkdir -p data
-        
-        # 執行大腦總指揮腳本 (會依序呼叫所有爬蟲與特徵工程)
-        python src/run_pipeline.py
-
-    - name: 💾 將更新後的資料存回 GitHub (Commit & Push)
-      run: |
-        # 設定 Git 機器人身分
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        
-        # 將有變動的核心資料庫與特徵表加入暫存區
-        git add -f data/nba_current.db
-        git add -f data/current_play_by_play.csv
-        git add -f data/nba_advanced_injury_features.csv
-        git add -f data/upcoming_games.csv
-        git add -f data/ml_features_master.csv
-        
-        # 檢查是否有變更，有的話就 Commit 並 Push 回去
-        git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Auto-update NBA data & ML features [skip ci]" && git push)
-        
-    - name: 📤 備份資料包 (Upload Artifacts)
-      uses: actions/upload-artifact@v4
-      with:
-        name: nba-daily-data
-        path: data/
-        retention-days: 7
+        python src/fetch_games.py
