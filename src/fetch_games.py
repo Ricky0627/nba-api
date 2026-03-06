@@ -15,20 +15,21 @@ import random
 DB_PATH = 'data/nba_current.db'
 
 PROXY_DICT = None
+PROXY_URL_STR = None
 
 def setup_proxy():
-    global PROXY_DICT
+    global PROXY_DICT, PROXY_URL_STR
     proxy_url = os.environ.get('PROXY_URL')
     if proxy_url:
-        os.environ['HTTP_PROXY'] = proxy_url
-        os.environ['HTTPS_PROXY'] = proxy_url
+        PROXY_URL_STR = proxy_url
         PROXY_DICT = {
             "http": proxy_url,
             "https": proxy_url
         }
-        print("✅ 已成功載入 Webshare 私人 Proxy 設定！")
+        # 🔥 關鍵修復 1：移除 os.environ 的全域綁架，改為在需要的地方動態傳入，保留直連的彈性
+        print("✅ 已成功載入 Webshare 私人 Proxy 設定！(支援智慧降級直連)")
     else:
-        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將使用預設 IP 連線。")
+        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將全程使用預設 IP 連線。")
 
 team_id_to_abbr = {
     1610612737: 'ATL', 1610612738: 'BOS', 1610612751: 'BKN', 1610612766: 'CHA', 1610612741: 'CHI',
@@ -130,24 +131,26 @@ def scrape_playsport_odds(target_date_tw_str):
     except: pass
     return odds_dict
 
-# 🔥 關鍵修復 1：直接拆解 V3 的原始 Dictionary 來抓 B2B
 def get_b2b_teams(us_date_str):
-    try:
-        yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-        board = scoreboardv3.ScoreboardV3(game_date=yday_str, timeout=15)
-        games = board.get_dict().get('scoreboard', {}).get('games', [])
-        
-        b2b_teams = []
-        for game in games:
-            home_id = game.get('homeTeam', {}).get('teamId')
-            away_id = game.get('awayTeam', {}).get('teamId')
-            if home_id: b2b_teams.append(team_id_to_abbr.get(int(home_id)))
-            if away_id: b2b_teams.append(team_id_to_abbr.get(int(away_id)))
+    yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+    # 🔥 關鍵修復 2：抓取 B2B 也有雙重備援 (Proxy 失敗就直連)
+    for attempt in range(2):
+        try:
+            use_proxy = PROXY_URL_STR if attempt == 0 else None
+            board = scoreboardv3.ScoreboardV3(game_date=yday_str, timeout=15, proxy=use_proxy)
+            games = board.get_dict().get('scoreboard', {}).get('games', [])
             
-        return [t for t in b2b_teams if t]
-    except Exception as e:
-        print(f"⚠️ get_b2b_teams 發生例外: {e}")
-        return []
+            b2b_teams = []
+            for game in games:
+                home_id = game.get('homeTeam', {}).get('teamId')
+                away_id = game.get('awayTeam', {}).get('teamId')
+                if home_id: b2b_teams.append(team_id_to_abbr.get(int(home_id)))
+                if away_id: b2b_teams.append(team_id_to_abbr.get(int(away_id)))
+                
+            return [t for t in b2b_teams if t]
+        except:
+            pass
+    return []
 
 def scrape_espn_injuries():
     import json
@@ -157,7 +160,6 @@ def scrape_espn_injuries():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
-    
     exact_mapping = {
         "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN", "Charlotte Hornets": "CHA",
         "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE", "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN",
@@ -168,7 +170,6 @@ def scrape_espn_injuries():
         "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX", "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC",
         "San Antonio Spurs": "SAS", "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS"
     }
-    
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
     try:
         r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
@@ -216,16 +217,25 @@ def fetch_and_save_upcoming_games():
         for attempt in range(3):
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
-                board = scoreboardv3.ScoreboardV3(game_date=us_date_str, headers=get_random_header(), timeout=15)
                 
-                # 🔥 關鍵修復 2：直接解析 V3 原始 Dictionary 獲取賽程
+                # 🔥 關鍵修復 3：智慧降級機制 (前兩次用 Proxy，第三次強制直連)
+                use_proxy = PROXY_URL_STR if attempt < 2 else None
+                if attempt == 2:
+                    print(f"   🔄 Proxy 似乎失效，第 3 次嘗試切換為「無 Proxy 直連」...")
+                    
+                board = scoreboardv3.ScoreboardV3(
+                    game_date=us_date_str, 
+                    headers=get_random_header(), 
+                    timeout=15, 
+                    proxy=use_proxy
+                )
+                
                 games = board.get_dict().get('scoreboard', {}).get('games', [])
                 
                 if not games: 
                     print(f"   ⏩ {us_date_str} 沒有比賽資料")
                     break
                 
-                # 過濾掉已經打完的比賽 (狀態包含 Final)
                 unplayed_games = [g for g in games if 'Final' not in str(g.get('gameStatusText', ''))]
                 
                 if not unplayed_games: 
@@ -236,7 +246,6 @@ def fetch_and_save_upcoming_games():
                 yday_teams = get_b2b_teams(us_date_str)
                 todays_odds = scrape_playsport_odds(tw_date_str)
                 
-                # 遍歷原始字典取得比賽細節
                 for game in unplayed_games:
                     game_id = game.get('gameId')
                     home_id = game.get('homeTeam', {}).get('teamId')
@@ -277,7 +286,7 @@ def fetch_and_save_upcoming_games():
                     })
                 break
             except Exception as e:
-                print(f"   ⚠️ 第 {attempt+1} 次連線失敗: {e}")
+                print(f"   ⚠️ 第 {attempt+1} 次連線發生錯誤: {e}")
                 time.sleep(2)
                 
         if len(upcoming_games) > 0: break
