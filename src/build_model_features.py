@@ -134,33 +134,35 @@ def build_final_master_table(df_features):
     final_df['game_id'] = final_df['game_id'].astype(str).str.zfill(10)
     
     df_features['GAME_ID'] = df_features['GAME_ID'].astype(str).str.zfill(10)
-    df_features['TEAM_ID'] = df_features['TEAM_ID'].astype(str)
     
-    keep_cols = ['GAME_ID', 'TEAM_ID', 'REST_DAYS', 'IS_B2B', 'AWAY_STREAK', 'EFFICIENCY_TREND', 'OFF_RATING_L10_STD']
+    # 🔥 關鍵修復：直接抓取 TEAM_ABBREVIATION 來對接
+    keep_cols = ['GAME_ID', 'TEAM_ABBREVIATION', 'REST_DAYS', 'IS_B2B', 'AWAY_STREAK', 'EFFICIENCY_TREND', 'OFF_RATING_L10_STD']
+    keep_cols = [c for c in keep_cols if c in df_features.columns] # 防呆保護
     keep_cols += [c for c in df_features.columns if c.endswith(('_L3', '_L5', '_L10', '_S2D'))]
     df_feat_clean = df_features[keep_cols].copy()
     
-    # 🔥 關鍵修復：把 games 表格的欄位強制轉小寫 🔥
-    games_df = get_merged_dataframe("games")
-    games_df.columns = [c.lower() for c in games_df.columns]
-    team_mapping = games_df[['game_id', 'home_team_id', 'visitor_team_id']].drop_duplicates()
-    
-    team_mapping['game_id'] = team_mapping['game_id'].astype(str).str.zfill(10)
-    team_mapping['home_team_id'] = team_mapping['home_team_id'].astype(str)
-    team_mapping['visitor_team_id'] = team_mapping['visitor_team_id'].astype(str)
-    
-    final_df = final_df.merge(team_mapping, on='game_id', how='left')
+    # 刪除了讀取 games 表格的邏輯，直接進入對接！
 
+    # ==== 對接主隊 (HOME) ====
     home_feats = df_feat_clean.copy()
-    home_feats.columns = [f"HOME_{c}" if c not in ['GAME_ID', 'TEAM_ID'] else c for c in home_feats.columns]
-    final_df = final_df.merge(home_feats, left_on=['game_id', 'home_team_id'], right_on=['GAME_ID', 'TEAM_ID'], how='left')
-    final_df = final_df.drop(columns=['GAME_ID', 'TEAM_ID'])
+    # 除了 ID 和縮寫，其他的全部加上 HOME_ 前綴
+    home_feats.columns = [f"HOME_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in home_feats.columns]
+    # 直接用縮寫 (home_team) 對縮寫 (TEAM_ABBREVIATION) 合併
+    final_df = final_df.merge(home_feats, left_on=['game_id', 'home_team'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='left')
+    
+    # 清理用完的過渡欄位
+    if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
+    if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
 
+    # ==== 對接客隊 (AWAY) ====
     away_feats = df_feat_clean.copy()
-    away_feats.columns = [f"AWAY_{c}" if c not in ['GAME_ID', 'TEAM_ID'] else c for c in away_feats.columns]
-    final_df = final_df.merge(away_feats, left_on=['game_id', 'visitor_team_id'], right_on=['GAME_ID', 'TEAM_ID'], how='left')
-    final_df = final_df.drop(columns=['GAME_ID', 'TEAM_ID', 'home_team_id', 'visitor_team_id'])
+    away_feats.columns = [f"AWAY_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in away_feats.columns]
+    final_df = final_df.merge(away_feats, left_on=['game_id', 'away_team'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='left')
+    
+    if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
+    if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
 
+    # 清除空值
     final_df = final_df.fillna(0)
     
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
