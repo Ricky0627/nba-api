@@ -10,8 +10,6 @@ import time
 import random
 import re
 import json
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # 隱藏 V2 的警告
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -22,15 +20,12 @@ from nba_api.stats.endpoints import scoreboardv2
 # ==========================================
 DB_PATH = 'data/nba_current.db'
 
-# 🔥 關鍵修改：優先讀取 PROXY_URL2
+# 專門用來動態開關 Proxy 的函數 (優先讀取 PROXY_URL2)
 def toggle_proxy(enable: bool):
-    # 優先尋找 PROXY_URL2，如果沒有才退回找 PROXY_URL
     proxy_url = os.environ.get('PROXY_URL2') or os.environ.get('PROXY_URL')
-    
     if enable and proxy_url:
         os.environ['HTTP_PROXY'] = proxy_url
         os.environ['HTTPS_PROXY'] = proxy_url
-        print(f"🔗 目前使用的 Proxy 來源: {'PROXY_URL2' if os.environ.get('PROXY_URL2') else 'PROXY_URL'}")
     else:
         os.environ.pop('HTTP_PROXY', None)
         os.environ.pop('HTTPS_PROXY', None)
@@ -106,6 +101,7 @@ def scrape_playsport_odds(target_date_tw_str):
     odds_dict = {}
     TEAM_MAPPING = {"湖人": "LAL", "勇士": "GSW", "金塊": "DEN", "塞爾提": "BOS", "公鹿": "MIL", "七六人": "PHI", "76人": "PHI", "太陽": "PHX", "快艇": "LAC", "熱火": "MIA", "尼克": "NYK", "騎士": "CLE", "獨行俠": "DAL", "小牛": "DAL", "灰熊": "MEM", "國王": "SAC", "老鷹": "ATL", "溜馬": "IND", "暴龍": "TOR", "公牛": "CHI", "雷霆": "OKC", "灰狼": "MIN", "爵士": "UTA", "拓荒者": "POR", "魔術": "ORL", "巫師": "WAS", "火箭": "HOU", "馬刺": "SAS", "活塞": "DET", "籃網": "BKN", "鵜鶘": "NOP", "黃蜂": "CHA"}
     try:
+        toggle_proxy(False) # 爬運彩不需要 Proxy，避免被擋
         r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.content, 'html.parser')
         rows = soup.find_all('tr', attrs={'gameid': True})
@@ -141,6 +137,7 @@ def scrape_playsport_odds(target_date_tw_str):
     except: pass
     return odds_dict
 
+# 🔥 超強偽裝 Header
 def get_random_header():
     return {
         'Host': 'stats.nba.com',
@@ -154,14 +151,6 @@ def get_random_header():
         'Connection': 'keep-alive',
         'Referer': 'https://www.nba.com/',
         'Origin': 'https://www.nba.com',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache',
-        'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"'
     }
 
 def get_b2b_teams(us_date_str):
@@ -180,6 +169,9 @@ def scrape_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive'
     }
     exact_mapping = {
         "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN", "Charlotte Hornets": "CHA",
@@ -193,6 +185,7 @@ def scrape_espn_injuries():
     }
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
     try:
+        toggle_proxy(True) # 找回你的 Proxy 來抓 ESPN
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code != 200: return injuries
         match = re.search(r'"injuries":(\[\{"displayName.*?\]\}\])', r.text)
@@ -227,7 +220,6 @@ def fetch_and_save_upcoming_games():
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
                 
-                # 前兩次嘗試打開 Proxy，第三次直連
                 if attempt < 2:
                     toggle_proxy(True)
                 else:
