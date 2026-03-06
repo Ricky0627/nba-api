@@ -23,8 +23,6 @@ PIPELINE_SCRIPTS = [
     ("生成進階傷病與滾動特徵", "src/generate_injury.py"),
     
     # 階段五：模型回測與部署
-    ("執行增量回測與結算", "src/nba_daily_backtest.py"),
-    ("重新訓練並部署模型", "src/train_deploy.py"),
     
     # 階段六：後續任務
     ("更新賽事資訊", "src/fetch_games.py")
