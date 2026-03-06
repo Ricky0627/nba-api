@@ -2,12 +2,17 @@ import pandas as pd
 import os
 import requests
 from bs4 import BeautifulSoup
-from nba_api.stats.endpoints import scoreboardv3
+import warnings
 from datetime import datetime, timedelta
 from pytz import timezone
 import sqlite3
 import time
 import random
+import re
+
+# 🔥 終極大絕招：直接把 V2 的煩人警告給隱藏起來！
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+from nba_api.stats.endpoints import scoreboardv2
 
 # ==========================================
 # ⚙️ 雲端自動化設定區
@@ -15,21 +20,21 @@ import random
 DB_PATH = 'data/nba_current.db'
 
 PROXY_DICT = None
-PROXY_URL_STR = None
 
 def setup_proxy():
-    global PROXY_DICT, PROXY_URL_STR
+    global PROXY_DICT
     proxy_url = os.environ.get('PROXY_URL')
     if proxy_url:
-        PROXY_URL_STR = proxy_url
+        # 恢復使用最穩定的全域綁定
+        os.environ['HTTP_PROXY'] = proxy_url
+        os.environ['HTTPS_PROXY'] = proxy_url
         PROXY_DICT = {
             "http": proxy_url,
             "https": proxy_url
         }
-        # 🔥 關鍵修復 1：移除 os.environ 的全域綁架，改為在需要的地方動態傳入，保留直連的彈性
-        print("✅ 已成功載入 Webshare 私人 Proxy 設定！(支援智慧降級直連)")
+        print("✅ 已成功載入 Webshare 私人 Proxy 設定！(切換回高穩定 V2 模式)")
     else:
-        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將全程使用預設 IP 連線。")
+        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將使用預設 IP 連線。")
 
 team_id_to_abbr = {
     1610612737: 'ATL', 1610612738: 'BOS', 1610612751: 'BKN', 1610612766: 'CHA', 1610612741: 'CHI',
@@ -63,7 +68,6 @@ def get_recent_roster(team_abbr: str):
     finally: conn.close()
 
 def parse_cell_robust(text):
-    import re
     if not text or text == '-' or '未開' in text: return None, None
     is_pk = 'PK' in text.upper()
     text = re.sub(r'\(.*?\)', '', text).replace('&nbsp;', '').strip()
@@ -132,34 +136,27 @@ def scrape_playsport_odds(target_date_tw_str):
     return odds_dict
 
 def get_b2b_teams(us_date_str):
-    yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-    # 🔥 關鍵修復 2：抓取 B2B 也有雙重備援 (Proxy 失敗就直連)
-    for attempt in range(2):
-        try:
-            use_proxy = PROXY_URL_STR if attempt == 0 else None
-            board = scoreboardv3.ScoreboardV3(game_date=yday_str, timeout=15, proxy=use_proxy)
-            games = board.get_dict().get('scoreboard', {}).get('games', [])
-            
-            b2b_teams = []
-            for game in games:
-                home_id = game.get('homeTeam', {}).get('teamId')
-                away_id = game.get('awayTeam', {}).get('teamId')
-                if home_id: b2b_teams.append(team_id_to_abbr.get(int(home_id)))
-                if away_id: b2b_teams.append(team_id_to_abbr.get(int(away_id)))
-                
-            return [t for t in b2b_teams if t]
-        except:
-            pass
-    return []
+    try:
+        yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+        # 改回 V2
+        board = scoreboardv2.ScoreboardV2(game_date=yday_str, timeout=15)
+        df = board.game_header.get_data_frame()
+        b2b_teams = []
+        for _, row in df.iterrows():
+            b2b_teams.append(team_id_to_abbr.get(row['HOME_TEAM_ID']))
+            b2b_teams.append(team_id_to_abbr.get(row['VISITOR_TEAM_ID']))
+        return [t for t in b2b_teams if t]
+    except: 
+        return []
 
 def scrape_espn_injuries():
     import json
-    import re
     url = "https://www.espn.com/nba/injuries"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
+    
     exact_mapping = {
         "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN", "Charlotte Hornets": "CHA",
         "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE", "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN",
@@ -170,12 +167,14 @@ def scrape_espn_injuries():
         "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX", "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC",
         "San Antonio Spurs": "SAS", "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS"
     }
+    
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
     try:
         r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
         if r.status_code != 200: return injuries
         match = re.search(r'"injuries":(\[\{"displayName.*?\]\}\])', r.text)
         if not match: return injuries
+        import json
         teams_data = json.loads(match.group(1))
         for team in teams_data:
             abbr = exact_mapping.get(team.get("displayName", "").strip())
@@ -218,27 +217,18 @@ def fetch_and_save_upcoming_games():
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
                 
-                # 🔥 關鍵修復 3：智慧降級機制 (前兩次用 Proxy，第三次強制直連)
-                use_proxy = PROXY_URL_STR if attempt < 2 else None
-                if attempt == 2:
-                    print(f"   🔄 Proxy 似乎失效，第 3 次嘗試切換為「無 Proxy 直連」...")
-                    
-                board = scoreboardv3.ScoreboardV3(
-                    game_date=us_date_str, 
-                    headers=get_random_header(), 
-                    timeout=15, 
-                    proxy=use_proxy
-                )
+                # 穩定的 V2 版本
+                board = scoreboardv2.ScoreboardV2(game_date=us_date_str, headers=get_random_header(), timeout=15)
+                games = board.game_header.get_data_frame()
                 
-                games = board.get_dict().get('scoreboard', {}).get('games', [])
-                
-                if not games: 
+                if games.empty: 
                     print(f"   ⏩ {us_date_str} 沒有比賽資料")
                     break
                 
-                unplayed_games = [g for g in games if 'Final' not in str(g.get('gameStatusText', ''))]
+                unplayed_games = games[~games['GAME_STATUS_TEXT'].str.contains('Final', case=False, na=False)]
+                unplayed_games = unplayed_games.drop_duplicates(subset=['GAME_ID'], keep='first')
                 
-                if not unplayed_games: 
+                if unplayed_games.empty: 
                     print(f"   ⏩ {us_date_str} 的比賽都打完了")
                     break
                     
@@ -246,16 +236,10 @@ def fetch_and_save_upcoming_games():
                 yday_teams = get_b2b_teams(us_date_str)
                 todays_odds = scrape_playsport_odds(tw_date_str)
                 
-                for game in unplayed_games:
-                    game_id = game.get('gameId')
-                    home_id = game.get('homeTeam', {}).get('teamId')
-                    away_id = game.get('awayTeam', {}).get('teamId')
-                    status_text = game.get('gameStatusText', 'TBD')
-                    
-                    if not home_id or not away_id: continue
-                    
-                    home_abbr = team_id_to_abbr.get(int(home_id))
-                    away_abbr = team_id_to_abbr.get(int(away_id))
+                for _, row in unplayed_games.iterrows():
+                    game_id = row['GAME_ID']
+                    home_abbr = team_id_to_abbr.get(row['HOME_TEAM_ID'])
+                    away_abbr = team_id_to_abbr.get(row['VISITOR_TEAM_ID'])
                     if not home_abbr or not away_abbr: continue
                     
                     home_roster = get_recent_roster(home_abbr)
@@ -278,7 +262,7 @@ def fetch_and_save_upcoming_games():
                     upcoming_games.append({
                         "game_date": us_date_str, "game_id": str(game_id).zfill(10),
                         "home_team": home_abbr, "away_team": away_abbr,
-                        "status": status_text, 
+                        "status": row['GAME_STATUS_TEXT'], 
                         "vegas_spread": game_odds.get("spread", 0.0), "vegas_total": game_odds.get("total", 0.0),
                         "home_is_b2b": home_abbr in yday_teams, "away_is_b2b": away_abbr in yday_teams,
                         "home_injuries_ids": match_injuries(home_abbr, home_roster), 
@@ -286,7 +270,7 @@ def fetch_and_save_upcoming_games():
                     })
                 break
             except Exception as e:
-                print(f"   ⚠️ 第 {attempt+1} 次連線發生錯誤: {e}")
+                print(f"   ⚠️ 第 {attempt+1} 次連線失敗: {e}")
                 time.sleep(2)
                 
         if len(upcoming_games) > 0: break
