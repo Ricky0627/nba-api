@@ -1,31 +1,64 @@
 name: NBA Daily AI Pipeline
 
 on:
-  workflow_dispatch: # 只有手動觸發，方便除錯
+  # ⏰ 排程觸發：每天 UTC 11:00 執行 (美東早上 07:00 / 台灣晚上 19:00)
+  schedule:
+    - cron: '0 08 * * *'
+  
+  # 🚀 手動觸發：讓你在 GitHub 網頁上可以隨時點擊按鈕強制執行
+  workflow_dispatch: 
 
 jobs:
-  debug-fetch-games:
+  daily-update:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 📥 取得程式碼
+    - name: 📥 取得程式碼 (Checkout repository)
       uses: actions/checkout@v4
 
-    - name: 🐍 設定 Python 3.10 
+    - name: 🐍 設定 Python 3.10 環境
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         cache: 'pip'
 
-    - name: 📦 安裝套件
+    - name: 📦 安裝必備套件 (Install dependencies)
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: 🐛 測試抓取今日賽程 (fetch_games.py)
+    - name: 🤖 啟動 NBA 每日更新管線 (Run Pipeline)
       env:
+        # 🔑 讀取 Proxy 密碼 (包含備用的 PROXY_URL2)
         PROXY_URL: ${{ secrets.PROXY_URL }}
-        PROXY_URL2: ${{ secrets.PROXY_URL2 }} # 注入新密碼
+        PROXY_URL2: ${{ secrets.PROXY_URL2 }}
       run: |
+        # 確保 data 資料夾存在
         mkdir -p data
-        python src/fetch_games.py
+        
+        # 執行大腦總指揮腳本 (會依序呼叫所有爬蟲與特徵工程，最後進行預測)
+        python src/run_pipeline.py
+
+    - name: 💾 將更新後的資料存回 GitHub (Commit & Push)
+      run: |
+        # 設定 Git 機器人身分
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # 將資料夾底下有變動的核心檔案加入暫存區 (加上 || true 防崩潰)
+        git add -f data/nba_current.db || true
+        git add -f data/current_play_by_play.csv || true
+        git add -f data/nba_advanced_injury_features.csv || true
+        git add -f data/upcoming_games.csv || true
+        git add -f data/ml_features_master.csv || true
+        git add -f data/predictions_history_log.csv || true  # 👈 新增：把預測歷史日誌也存檔
+        
+        # 檢查是否有變更，有的話就 Commit 並 Push 回去
+        git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Auto-update NBA data & ML predictions [skip ci]" && git push)
+        
+    - name: 📤 備份資料包 (Upload Artifacts)
+      uses: actions/upload-artifact@v4
+      with:
+        name: nba-daily-data
+        path: data/
+        retention-days: 7
