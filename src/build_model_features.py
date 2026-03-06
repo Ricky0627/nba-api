@@ -31,8 +31,17 @@ def load_and_merge_team_logs():
     df_mom = get_merged_dataframe("team_features_momentum")
     df_qtr = get_merged_dataframe("team_features_quarterly")
 
-    # 以 advanced 為基底，確保欄位大寫
-    df_adv.columns = [c.upper() for c in df_adv.columns]
+    # 🔥 關鍵修復：強制統一所有資料表的 GAME_ID 與 TEAM_ID 型態 (字串) 與大小寫
+    all_dfs = [df_adv, df_base, df_score, df_four, df_hustle, df_clutch, df_shot, df_tov, df_mom, df_qtr]
+    for df in all_dfs:
+        if not df.empty:
+            df.columns = [c.upper() for c in df.columns]
+            if 'GAME_ID' in df.columns:
+                df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
+            if 'TEAM_ID' in df.columns:
+                df['TEAM_ID'] = df['TEAM_ID'].astype(str)
+
+    # 以 advanced 為基底
     base_cols = ['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GAME_DATE', 'SEASON_YEAR', 'MATCHUP']
     
     # 防呆：確保所需的欄位存在
@@ -40,18 +49,15 @@ def load_and_merge_team_logs():
     df_master = df_adv[base_cols + avail_adv_cols].copy()
 
     # 合併 Scoring
-    df_score.columns = [c.upper() for c in df_score.columns]
     score_cols = [c for c in ['PCT_PTS_3PT', 'PCT_PTS_PAINT', 'PCT_AST_FGM'] if c in df_score.columns]
     if score_cols:
         df_master = df_master.merge(df_score[['GAME_ID', 'TEAM_ID'] + score_cols], on=['GAME_ID', 'TEAM_ID'], how='left')
 
     # 合併 Four Factors
-    df_four.columns = [c.upper() for c in df_four.columns]
     if 'FTA_RATE' in df_four.columns:
         df_master = df_master.merge(df_four[['GAME_ID', 'TEAM_ID', 'FTA_RATE']], on=['GAME_ID', 'TEAM_ID'], how='left')
 
     # 合併 Hustle
-    df_hustle.columns = [c.upper() for c in df_hustle.columns]
     hustle_cols = [c for c in ['CONTESTED_SHOTS', 'LOOSE_BALLS_RECOVERED', 'CHARGES_DRAWN', 'SCREEN_ASSISTS'] if c in df_hustle.columns]
     if hustle_cols:
         df_master = df_master.merge(df_hustle[['GAME_ID', 'TEAM_ID'] + hustle_cols], on=['GAME_ID', 'TEAM_ID'], how='left')
@@ -59,7 +65,6 @@ def load_and_merge_team_logs():
     # 合併 PBP 特徵
     for pbp_df in [df_clutch, df_shot, df_tov, df_mom, df_qtr]:
         if pbp_df.empty: continue
-        pbp_df.columns = [c.upper() for c in pbp_df.columns]
         cols_to_use = [c for c in pbp_df.columns if c not in ['TEAM_ABBREVIATION', 'GAME_DATE', 'SEASON_YEAR', 'MATCHUP']] 
         df_master = df_master.merge(pbp_df[cols_to_use], on=['GAME_ID', 'TEAM_ID'], how='left')
 
@@ -75,7 +80,6 @@ def load_and_merge_team_logs():
 def engineer_rolling_features(df):
     print("⏳ 2. 嚴格防洩漏：計算時間切片 (S2D, L10, L5, L3) 與衍生特徵...")
     
-    # 定義所有要滾動計算的特徵清單 (自動適配，有的話才算)
     target_metrics = [
         'PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE',
         'PCT_PTS_3PT', 'PCT_PTS_PAINT', 'PCT_AST_FGM', 'FTA_RATE', 
@@ -141,11 +145,11 @@ def build_final_master_table(df_features):
         print(f"❌ 嚴重錯誤：找不到 {INJURY_CSV}！請先確保 generate_injury.py 已執行。")
         return
         
-    # 直接以剛剛產生好的 Injury 表為基底
     final_df = pd.read_csv(INJURY_CSV)
     final_df['game_id'] = final_df['game_id'].astype(str).str.zfill(10)
     
     df_features['GAME_ID'] = df_features['GAME_ID'].astype(str).str.zfill(10)
+    df_features['TEAM_ID'] = df_features['TEAM_ID'].astype(str)
     
     # 抓取要 Join 的特徵欄位
     keep_cols = ['GAME_ID', 'TEAM_ID', 'REST_DAYS', 'IS_B2B', 'AWAY_STREAK', 'EFFICIENCY_TREND', 'OFF_RATING_L10_STD']
@@ -155,6 +159,9 @@ def build_final_master_table(df_features):
     # ==== 獲取球隊 ID 映射對照表 ====
     team_mapping = get_merged_dataframe("games")[['game_id', 'home_team_id', 'visitor_team_id']].drop_duplicates()
     team_mapping['game_id'] = team_mapping['game_id'].astype(str).str.zfill(10)
+    team_mapping['home_team_id'] = team_mapping['home_team_id'].astype(str)
+    team_mapping['visitor_team_id'] = team_mapping['visitor_team_id'].astype(str)
+    
     final_df = final_df.merge(team_mapping, on='game_id', how='left')
 
     # ==== 對接主隊 (HOME) ====
@@ -175,7 +182,6 @@ def build_final_master_table(df_features):
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     final_df.to_csv(OUTPUT_CSV, index=False)
     print(f"\n✅ 終極大表大功告成！已輸出至: {OUTPUT_CSV}")
-    print(f"   這張表目前包含 {len(final_df.columns)} 個強大特徵，可直接餵入 19 組 MLOps 模型！")
 
 if __name__ == "__main__":
     print("🚀 啟動 NBA 終極特徵工程引擎 (Feature Store Builder)")
