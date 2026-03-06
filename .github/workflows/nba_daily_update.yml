@@ -1,16 +1,11 @@
-name: NBA Daily AI Pipeline
+name: Debug - Generate Injury
 
 on:
-  # ⏰ 排程觸發：每天 UTC 11:00 執行 (美東早上 07:00 / 台灣晚上 19:00)
-  # 這個時間點美國昨晚的比賽一定都結算了，PlaySport 通常也已經開出明天的新盤
-  schedule:
-    - cron: '0 11 * * *'
-  
-  # 🚀 手動觸發：讓你在 GitHub 網頁上可以隨時點擊按鈕強制執行
+  # 只保留手動觸發，方便除錯
   workflow_dispatch: 
 
 jobs:
-  daily-update:
+  debug-script:
     runs-on: ubuntu-latest
     
     steps:
@@ -21,44 +16,26 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-        cache: 'pip' # 快取 pip，讓每天安裝套件的速度飛快
+        cache: 'pip' # 依賴你剛剛建立的 requirements.txt
 
     - name: 📦 安裝必備套件 (Install dependencies)
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: 🤖 啟動 NBA 每日更新管線 (Run Pipeline)
-      env:
-        # 🔑 從 GitHub Secrets 讀取你的 Webshare Proxy 帳密，避免外洩
-        PROXY_URL: ${{ secrets.PROXY_URL }}
+    - name: 🧪 單獨測試 generate_injury.py
       run: |
-        # 確保 data 資料夾存在，避免腳本找不到路徑報錯
+        # 確保 data 資料夾存在
         mkdir -p data
         
-        # 執行大腦總指揮腳本
-        python src/run_pipeline.py
+        # 只執行這支有問題的腳本！
+        python src/generate_injury.py
 
-    - name: 💾 將更新後的資料存回 GitHub (Commit & Push)
-      run: |
-        # 設定 Git 機器人身分
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        
-        # 將 data 資料夾底下有變動的核心檔案加入暫存區
-        # (使用 force 強制加入，以防你不小心把它們寫進 .gitignore)
-        git add -f data/nba_current.db
-        git add -f data/current_play_by_play.csv
-        git add -f data/nba_advanced_injury_features.csv
-        git add -f data/upcoming_games.csv
-        
-        # 檢查是否有變更，有的話就 Commit 並 Push 回去
-        # [skip ci] 標籤可避免這次 push 又無限迴圈觸發 Action
-        git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Auto-update NBA data & AI features [skip ci]" && git push)
-        
-    - name: 📤 備份資料包 (Upload Artifacts)
+    - name: 📤 備份測試資料包 (Upload Artifacts)
+      # 不管上面有沒有報錯，都嘗試把 data 資料夾打包下來讓我們檢查
+      if: always() 
       uses: actions/upload-artifact@v4
       with:
-        name: nba-daily-data
+        name: debug-injury-data
         path: data/
-        retention-days: 7 # 雲端備份保留 7 天，方便你隨時下載除錯
+        retention-days: 3
