@@ -2,14 +2,12 @@ import pandas as pd
 import os
 import requests
 from bs4 import BeautifulSoup
-from nba_api.stats.endpoints import scoreboardv3 # 👈 關鍵升級 1：改引入 v3
+from nba_api.stats.endpoints import scoreboardv3
 from datetime import datetime, timedelta
 from pytz import timezone
 import sqlite3
 import time
 import random
-import re
-import json
 
 # ==========================================
 # ⚙️ 雲端自動化設定區
@@ -18,9 +16,6 @@ DB_PATH = 'data/nba_current.db'
 
 PROXY_DICT = None
 
-# ===========================
-# 🛡️ Proxy 代理伺服器設定
-# ===========================
 def setup_proxy():
     global PROXY_DICT
     proxy_url = os.environ.get('PROXY_URL')
@@ -33,9 +28,8 @@ def setup_proxy():
         }
         print("✅ 已成功載入 Webshare 私人 Proxy 設定！")
     else:
-        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將使用 GitHub 預設 IP 連線（極可能被擋）。")
+        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將使用預設 IP 連線。")
 
-# 球隊 ID 轉縮寫字典
 team_id_to_abbr = {
     1610612737: 'ATL', 1610612738: 'BOS', 1610612751: 'BKN', 1610612766: 'CHA', 1610612741: 'CHI',
     1610612739: 'CLE', 1610612742: 'DAL', 1610612743: 'DEN', 1610612765: 'DET', 1610612744: 'GSW',
@@ -68,6 +62,7 @@ def get_recent_roster(team_abbr: str):
     finally: conn.close()
 
 def parse_cell_robust(text):
+    import re
     if not text or text == '-' or '未開' in text: return None, None
     is_pk = 'PK' in text.upper()
     text = re.sub(r'\(.*?\)', '', text).replace('&nbsp;', '').strip()
@@ -135,18 +130,24 @@ def scrape_playsport_odds(target_date_tw_str):
     except: pass
     return odds_dict
 
+# 🔥 關鍵修復 1：直接拆解 V3 的原始 Dictionary 來抓 B2B
 def get_b2b_teams(us_date_str):
     try:
         yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-        # 👈 關鍵升級 2：改用 ScoreboardV3
         board = scoreboardv3.ScoreboardV3(game_date=yday_str, timeout=15)
-        df = board.game_header.get_data_frame()
+        games = board.get_dict().get('scoreboard', {}).get('games', [])
+        
         b2b_teams = []
-        for _, row in df.iterrows():
-            b2b_teams.append(team_id_to_abbr.get(row['HOME_TEAM_ID']))
-            b2b_teams.append(team_id_to_abbr.get(row['VISITOR_TEAM_ID']))
+        for game in games:
+            home_id = game.get('homeTeam', {}).get('teamId')
+            away_id = game.get('awayTeam', {}).get('teamId')
+            if home_id: b2b_teams.append(team_id_to_abbr.get(int(home_id)))
+            if away_id: b2b_teams.append(team_id_to_abbr.get(int(away_id)))
+            
         return [t for t in b2b_teams if t]
-    except: return []
+    except Exception as e:
+        print(f"⚠️ get_b2b_teams 發生例外: {e}")
+        return []
 
 def scrape_espn_injuries():
     import json
@@ -154,9 +155,7 @@ def scrape_espn_injuries():
     url = "https://www.espn.com/nba/injuries"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
     
     exact_mapping = {
@@ -171,61 +170,34 @@ def scrape_espn_injuries():
     }
     
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
-    
     try:
         r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
-        if r.status_code != 200:
-            print(f"⚠️ ESPN 連線失敗，狀態碼: {r.status_code}")
-            return injuries
-            
+        if r.status_code != 200: return injuries
         match = re.search(r'"injuries":(\[\{"displayName.*?\]\}\])', r.text)
-        if not match:
-            print("⚠️ 找不到 ESPN 傷兵陣列標籤")
-            return injuries
-            
+        if not match: return injuries
         teams_data = json.loads(match.group(1))
-        
         for team in teams_data:
-            team_name = team.get("displayName", "").strip()
-            abbr = exact_mapping.get(team_name)
-            if not abbr: 
-                continue
-                
+            abbr = exact_mapping.get(team.get("displayName", "").strip())
+            if not abbr: continue
             for item in team.get("items", []):
                 name = item.get("athlete", {}).get("name", "Unknown")
                 status = item.get("statusDesc", "Unknown")
                 comment = item.get("description", "")
-                
                 if name and status:
-                    injuries[abbr].append({
-                        "name": name,
-                        "status": status,
-                        "comment": comment
-                    })
-                    
-    except Exception as e:
-        print(f"⚠️ 解析 ESPN 傷兵名單發生錯誤: {e}")
-        
+                    injuries[abbr].append({"name": name, "status": status, "comment": comment})
+    except: pass
     return injuries
 
 def get_random_header():
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
-    ]
     return {
         'Host': 'stats.nba.com',
-        'User-Agent': random.choice(user_agents),
+        'User-Agent': random.choice([
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/16.4 Safari/605.1.15'
+        ]),
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://www.nba.com/',
         'Origin': 'https://stats.nba.com/',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
     }
 
 def fetch_and_save_upcoming_games():
@@ -244,17 +216,19 @@ def fetch_and_save_upcoming_games():
         for attempt in range(3):
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
-                # 👈 關鍵升級 3：改用 ScoreboardV3
                 board = scoreboardv3.ScoreboardV3(game_date=us_date_str, headers=get_random_header(), timeout=15)
-                games = board.game_header.get_data_frame()
-                if games.empty: 
+                
+                # 🔥 關鍵修復 2：直接解析 V3 原始 Dictionary 獲取賽程
+                games = board.get_dict().get('scoreboard', {}).get('games', [])
+                
+                if not games: 
                     print(f"   ⏩ {us_date_str} 沒有比賽資料")
                     break
                 
-                unplayed_games = games[~games['GAME_STATUS_TEXT'].str.contains('Final', case=False, na=False)]
-                unplayed_games = unplayed_games.drop_duplicates(subset=['GAME_ID'], keep='first')
+                # 過濾掉已經打完的比賽 (狀態包含 Final)
+                unplayed_games = [g for g in games if 'Final' not in str(g.get('gameStatusText', ''))]
                 
-                if unplayed_games.empty: 
+                if not unplayed_games: 
                     print(f"   ⏩ {us_date_str} 的比賽都打完了")
                     break
                     
@@ -262,10 +236,17 @@ def fetch_and_save_upcoming_games():
                 yday_teams = get_b2b_teams(us_date_str)
                 todays_odds = scrape_playsport_odds(tw_date_str)
                 
-                for _, row in unplayed_games.iterrows():
-                    game_id = row['GAME_ID']
-                    home_abbr = team_id_to_abbr.get(row['HOME_TEAM_ID'])
-                    away_abbr = team_id_to_abbr.get(row['VISITOR_TEAM_ID'])
+                # 遍歷原始字典取得比賽細節
+                for game in unplayed_games:
+                    game_id = game.get('gameId')
+                    home_id = game.get('homeTeam', {}).get('teamId')
+                    away_id = game.get('awayTeam', {}).get('teamId')
+                    status_text = game.get('gameStatusText', 'TBD')
+                    
+                    if not home_id or not away_id: continue
+                    
+                    home_abbr = team_id_to_abbr.get(int(home_id))
+                    away_abbr = team_id_to_abbr.get(int(away_id))
                     if not home_abbr or not away_abbr: continue
                     
                     home_roster = get_recent_roster(home_abbr)
@@ -278,14 +259,8 @@ def fetch_and_save_upcoming_games():
                             for player in roster:
                                 clean_inj_name = inj["name"].replace('Jr.', '').replace('Sr.', '').replace('III', '').strip()
                                 last_name = clean_inj_name.split()[-1]
-                                
                                 if last_name in player['name']: 
-                                    matched.append({
-                                        "id": player['id'],
-                                        "name": player['name'],
-                                        "status": inj["status"],
-                                        "comment": inj["comment"]
-                                    })
+                                    matched.append({"id": player['id'], "name": player['name'], "status": inj["status"], "comment": inj["comment"]})
                                     break
                         return json.dumps(matched, ensure_ascii=False)
 
@@ -294,9 +269,8 @@ def fetch_and_save_upcoming_games():
                     upcoming_games.append({
                         "game_date": us_date_str, "game_id": str(game_id).zfill(10),
                         "home_team": home_abbr, "away_team": away_abbr,
-                        "status": row['GAME_STATUS_TEXT'], 
-                        "vegas_spread": game_odds.get("spread", 0.0),
-                        "vegas_total": game_odds.get("total", 0.0),
+                        "status": status_text, 
+                        "vegas_spread": game_odds.get("spread", 0.0), "vegas_total": game_odds.get("total", 0.0),
                         "home_is_b2b": home_abbr in yday_teams, "away_is_b2b": away_abbr in yday_teams,
                         "home_injuries_ids": match_injuries(home_abbr, home_roster), 
                         "away_injuries_ids": match_injuries(away_abbr, away_roster)
