@@ -22,18 +22,20 @@ from nba_api.stats.endpoints import scoreboardv2
 # ==========================================
 DB_PATH = 'data/nba_current.db'
 
-# 專門用來動態開關 Proxy 的函數
+# 🔥 關鍵修改：優先讀取 PROXY_URL2
 def toggle_proxy(enable: bool):
-    proxy_url = os.environ.get('PROXY_URL')
+    # 優先尋找 PROXY_URL2，如果沒有才退回找 PROXY_URL
+    proxy_url = os.environ.get('PROXY_URL2') or os.environ.get('PROXY_URL')
+    
     if enable and proxy_url:
         os.environ['HTTP_PROXY'] = proxy_url
         os.environ['HTTPS_PROXY'] = proxy_url
+        print(f"🔗 目前使用的 Proxy 來源: {'PROXY_URL2' if os.environ.get('PROXY_URL2') else 'PROXY_URL'}")
     else:
         os.environ.pop('HTTP_PROXY', None)
         os.environ.pop('HTTPS_PROXY', None)
 
 def get_db_connection():
-    # 本地測試時自動尋找上一層目錄的 db
     db_path = DB_PATH
     if not os.path.exists(db_path) and os.path.exists('../data/nba_current.db'):
         db_path = '../data/nba_current.db'
@@ -139,7 +141,6 @@ def scrape_playsport_odds(target_date_tw_str):
     except: pass
     return odds_dict
 
-# 🔥 超強偽裝 Header
 def get_random_header():
     return {
         'Host': 'stats.nba.com',
@@ -210,9 +211,6 @@ def scrape_espn_injuries():
     return injuries
 
 def fetch_and_save_upcoming_games():
-    # 🔥 若是在本地執行，先確定 Proxy 沒有綁架
-    toggle_proxy(False)
-    
     print("🚀 開始抓取明日/近期賽程...")
     tw_tz = timezone('Asia/Taipei')
     us_tz = timezone('US/Eastern')
@@ -229,10 +227,14 @@ def fetch_and_save_upcoming_games():
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
                 
-                # 🔥 加上隨機延遲，避免密集請求被 Cloudflare 抓包
-                time.sleep(random.uniform(1.5, 3.5))
+                # 前兩次嘗試打開 Proxy，第三次直連
+                if attempt < 2:
+                    toggle_proxy(True)
+                else:
+                    toggle_proxy(False)
+                    print(f"   🔄 第 3 次嘗試切換為「無 Proxy 直連」...")
                 
-                # Timeout 放寬到 25 秒
+                time.sleep(random.uniform(1.5, 3.5))
                 board = scoreboardv2.ScoreboardV2(game_date=us_date_str, headers=get_random_header(), timeout=25)
                 games = board.game_header.get_data_frame()
                 
@@ -286,7 +288,7 @@ def fetch_and_save_upcoming_games():
             except Exception as e:
                 err_msg = str(e).split("Caused by")[-1] if "Caused by" in str(e) else str(e)
                 print(f"   ⚠️ 第 {attempt+1} 次連線失敗: {err_msg}")
-                time.sleep(5) # 失敗的話等久一點再試
+                time.sleep(3) 
                 
         if len(upcoming_games) > 0: break
 
