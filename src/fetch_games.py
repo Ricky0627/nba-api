@@ -2,7 +2,7 @@ import pandas as pd
 import os
 import requests
 from bs4 import BeautifulSoup
-from nba_api.stats.endpoints import scoreboardv2
+from nba_api.stats.endpoints import scoreboardv3 # 👈 關鍵升級 1：改引入 v3
 from datetime import datetime, timedelta
 from pytz import timezone
 import sqlite3
@@ -14,7 +14,7 @@ import json
 # ==========================================
 # ⚙️ 雲端自動化設定區
 # ==========================================
-DB_PATH = 'data/nba_current.db'  # 👈 改為雲端版的輕量級資料庫
+DB_PATH = 'data/nba_current.db'
 
 PROXY_DICT = None
 
@@ -22,7 +22,6 @@ PROXY_DICT = None
 # 🛡️ Proxy 代理伺服器設定
 # ===========================
 def setup_proxy():
-    """從 GitHub Secrets 讀取專屬 Proxy 並設定為全域環境變數"""
     global PROXY_DICT
     proxy_url = os.environ.get('PROXY_URL')
     if proxy_url:
@@ -47,7 +46,6 @@ team_id_to_abbr = {
 }
 
 def get_db_connection():
-    # 加入 timeout 防鎖死
     return sqlite3.connect(DB_PATH, timeout=15.0)
 
 def get_recent_roster(team_abbr: str):
@@ -102,7 +100,6 @@ def scrape_playsport_odds(target_date_tw_str):
     odds_dict = {}
     TEAM_MAPPING = {"湖人": "LAL", "勇士": "GSW", "金塊": "DEN", "塞爾提": "BOS", "公鹿": "MIL", "七六人": "PHI", "76人": "PHI", "太陽": "PHX", "快艇": "LAC", "熱火": "MIA", "尼克": "NYK", "騎士": "CLE", "獨行俠": "DAL", "小牛": "DAL", "灰熊": "MEM", "國王": "SAC", "老鷹": "ATL", "溜馬": "IND", "暴龍": "TOR", "公牛": "CHI", "雷霆": "OKC", "灰狼": "MIN", "爵士": "UTA", "拓荒者": "POR", "魔術": "ORL", "巫師": "WAS", "火箭": "HOU", "馬刺": "SAS", "活塞": "DET", "籃網": "BKN", "鵜鶘": "NOP", "黃蜂": "CHA"}
     try:
-        # 加入 Proxy
         r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
         soup = BeautifulSoup(r.content, 'html.parser')
         rows = soup.find_all('tr', attrs={'gameid': True})
@@ -141,7 +138,8 @@ def scrape_playsport_odds(target_date_tw_str):
 def get_b2b_teams(us_date_str):
     try:
         yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-        board = scoreboardv2.ScoreboardV2(game_date=yday_str, timeout=15)
+        # 👈 關鍵升級 2：改用 ScoreboardV3
+        board = scoreboardv3.ScoreboardV3(game_date=yday_str, timeout=15)
         df = board.game_header.get_data_frame()
         b2b_teams = []
         for _, row in df.iterrows():
@@ -175,7 +173,6 @@ def scrape_espn_injuries():
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
     
     try:
-        # 加入 Proxy
         r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
         if r.status_code != 200:
             print(f"⚠️ ESPN 連線失敗，狀態碼: {r.status_code}")
@@ -247,7 +244,8 @@ def fetch_and_save_upcoming_games():
         for attempt in range(3):
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
-                board = scoreboardv2.ScoreboardV2(game_date=us_date_str, headers=get_random_header(), timeout=15)
+                # 👈 關鍵升級 3：改用 ScoreboardV3
+                board = scoreboardv3.ScoreboardV3(game_date=us_date_str, headers=get_random_header(), timeout=15)
                 games = board.game_header.get_data_frame()
                 if games.empty: 
                     print(f"   ⏩ {us_date_str} 沒有比賽資料")

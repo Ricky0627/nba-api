@@ -21,6 +21,7 @@ PIPELINE_SCRIPTS = [
     # 階段四：特徵工程 (Feature Engineering)
     ("提煉 PBP 五大進階特徵", "src/build_all_pbp_features_to_db.py"),  # 👈 新增：PBP 特徵提煉
     ("生成進階傷病與滾動特徵", "src/generate_injury.py"),
+    ("建構機器學習終極大表", "src/build_model_features.py"),
     
     # 階段五：模型回測與部署
     
