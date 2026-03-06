@@ -9,8 +9,11 @@ import sqlite3
 import time
 import random
 import re
+import json
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# 🔥 終極大絕招：直接把 V2 的煩人警告給隱藏起來！
+# 隱藏 V2 的警告
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 from nba_api.stats.endpoints import scoreboardv2
 
@@ -19,22 +22,24 @@ from nba_api.stats.endpoints import scoreboardv2
 # ==========================================
 DB_PATH = 'data/nba_current.db'
 
-PROXY_DICT = None
-
-def setup_proxy():
-    global PROXY_DICT
+# 專門用來動態開關 Proxy 的函數
+def toggle_proxy(enable: bool):
     proxy_url = os.environ.get('PROXY_URL')
-    if proxy_url:
-        # 恢復使用最穩定的全域綁定
+    if enable and proxy_url:
         os.environ['HTTP_PROXY'] = proxy_url
         os.environ['HTTPS_PROXY'] = proxy_url
-        PROXY_DICT = {
-            "http": proxy_url,
-            "https": proxy_url
-        }
-        print("✅ 已成功載入 Webshare 私人 Proxy 設定！(切換回高穩定 V2 模式)")
     else:
-        print("⚠️ 警告：未偵測到 PROXY_URL 環境變數，將使用預設 IP 連線。")
+        os.environ.pop('HTTP_PROXY', None)
+        os.environ.pop('HTTPS_PROXY', None)
+
+def get_db_connection():
+    # 本地測試時自動尋找上一層目錄的 db
+    db_path = DB_PATH
+    if not os.path.exists(db_path) and os.path.exists('../data/nba_current.db'):
+        db_path = '../data/nba_current.db'
+    elif not os.path.exists(db_path) and os.path.exists('../data/nba_raw.db'):
+        db_path = '../data/nba_raw.db'
+    return sqlite3.connect(db_path, timeout=15.0)
 
 team_id_to_abbr = {
     1610612737: 'ATL', 1610612738: 'BOS', 1610612751: 'BKN', 1610612766: 'CHA', 1610612741: 'CHI',
@@ -45,27 +50,26 @@ team_id_to_abbr = {
     1610612758: 'SAC', 1610612759: 'SAS', 1610612761: 'TOR', 1610612762: 'UTA', 1610612764: 'WAS'
 }
 
-def get_db_connection():
-    return sqlite3.connect(DB_PATH, timeout=15.0)
-
 def get_recent_roster(team_abbr: str):
-    conn = get_db_connection()
-    query = f"""
-        SELECT DISTINCT PLAYER_ID, PLAYER_NAME
-        FROM player_stats_base
-        WHERE TEAM_ABBREVIATION = '{team_abbr}' 
-        AND GAME_ID IN (
-            SELECT GAME_ID FROM boxscore_base 
-            WHERE TEAM_ABBREVIATION = '{team_abbr}' 
-            ORDER BY GAME_DATE DESC LIMIT 10
-        )
-        AND MIN IS NOT NULL AND MIN != '0' AND MIN != '0:00'
-    """
     try:
+        conn = get_db_connection()
+        query = f"""
+            SELECT DISTINCT PLAYER_ID, PLAYER_NAME
+            FROM player_stats_base
+            WHERE TEAM_ABBREVIATION = '{team_abbr}' 
+            AND GAME_ID IN (
+                SELECT GAME_ID FROM boxscore_base 
+                WHERE TEAM_ABBREVIATION = '{team_abbr}' 
+                ORDER BY GAME_DATE DESC LIMIT 10
+            )
+            AND MIN IS NOT NULL AND MIN != '0' AND MIN != '0:00'
+        """
         df = pd.read_sql(query, conn)
+        conn.close()
         return [{"id": row['PLAYER_ID'], "name": row['PLAYER_NAME']} for _, row in df.iterrows()]
-    except: return []
-    finally: conn.close()
+    except Exception as e:
+        print(f"⚠️ 讀取陣容失敗: {e}")
+        return []
 
 def parse_cell_robust(text):
     if not text or text == '-' or '未開' in text: return None, None
@@ -100,7 +104,7 @@ def scrape_playsport_odds(target_date_tw_str):
     odds_dict = {}
     TEAM_MAPPING = {"湖人": "LAL", "勇士": "GSW", "金塊": "DEN", "塞爾提": "BOS", "公鹿": "MIL", "七六人": "PHI", "76人": "PHI", "太陽": "PHX", "快艇": "LAC", "熱火": "MIA", "尼克": "NYK", "騎士": "CLE", "獨行俠": "DAL", "小牛": "DAL", "灰熊": "MEM", "國王": "SAC", "老鷹": "ATL", "溜馬": "IND", "暴龍": "TOR", "公牛": "CHI", "雷霆": "OKC", "灰狼": "MIN", "爵士": "UTA", "拓荒者": "POR", "魔術": "ORL", "巫師": "WAS", "火箭": "HOU", "馬刺": "SAS", "活塞": "DET", "籃網": "BKN", "鵜鶘": "NOP", "黃蜂": "CHA"}
     try:
-        r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
+        r = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(r.content, 'html.parser')
         rows = soup.find_all('tr', attrs={'gameid': True})
         i = 0
@@ -135,28 +139,47 @@ def scrape_playsport_odds(target_date_tw_str):
     except: pass
     return odds_dict
 
+# 🔥 超強偽裝 Header
+def get_random_header():
+    return {
+        'Host': 'stats.nba.com',
+        'User-Agent': random.choice([
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ]),
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Referer': 'https://www.nba.com/',
+        'Origin': 'https://www.nba.com',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+        'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"'
+    }
+
 def get_b2b_teams(us_date_str):
     try:
         yday_str = (datetime.strptime(us_date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-        # 改回 V2
-        board = scoreboardv2.ScoreboardV2(game_date=yday_str, timeout=15)
+        board = scoreboardv2.ScoreboardV2(game_date=yday_str, headers=get_random_header(), timeout=25)
         df = board.game_header.get_data_frame()
         b2b_teams = []
         for _, row in df.iterrows():
             b2b_teams.append(team_id_to_abbr.get(row['HOME_TEAM_ID']))
             b2b_teams.append(team_id_to_abbr.get(row['VISITOR_TEAM_ID']))
         return [t for t in b2b_teams if t]
-    except: 
-        return []
+    except: return []
 
 def scrape_espn_injuries():
-    import json
     url = "https://www.espn.com/nba/injuries"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
-    
     exact_mapping = {
         "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN", "Charlotte Hornets": "CHA",
         "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE", "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN",
@@ -167,14 +190,12 @@ def scrape_espn_injuries():
         "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX", "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC",
         "San Antonio Spurs": "SAS", "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS"
     }
-    
     injuries = {abbr: [] for abbr in set(exact_mapping.values())}
     try:
-        r = requests.get(url, headers=headers, timeout=15, proxies=PROXY_DICT)
+        r = requests.get(url, headers=headers, timeout=15)
         if r.status_code != 200: return injuries
         match = re.search(r'"injuries":(\[\{"displayName.*?\]\}\])', r.text)
         if not match: return injuries
-        import json
         teams_data = json.loads(match.group(1))
         for team in teams_data:
             abbr = exact_mapping.get(team.get("displayName", "").strip())
@@ -188,19 +209,10 @@ def scrape_espn_injuries():
     except: pass
     return injuries
 
-def get_random_header():
-    return {
-        'Host': 'stats.nba.com',
-        'User-Agent': random.choice([
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/16.4 Safari/605.1.15'
-        ]),
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://www.nba.com/',
-        'Origin': 'https://stats.nba.com/',
-    }
-
 def fetch_and_save_upcoming_games():
+    # 🔥 若是在本地執行，先確定 Proxy 沒有綁架
+    toggle_proxy(False)
+    
     print("🚀 開始抓取明日/近期賽程...")
     tw_tz = timezone('Asia/Taipei')
     us_tz = timezone('US/Eastern')
@@ -217,8 +229,11 @@ def fetch_and_save_upcoming_games():
             try:
                 print(f"📡 正在檢查日期 {us_date_str} (嘗試次數 {attempt+1}/3)...")
                 
-                # 穩定的 V2 版本
-                board = scoreboardv2.ScoreboardV2(game_date=us_date_str, headers=get_random_header(), timeout=15)
+                # 🔥 加上隨機延遲，避免密集請求被 Cloudflare 抓包
+                time.sleep(random.uniform(1.5, 3.5))
+                
+                # Timeout 放寬到 25 秒
+                board = scoreboardv2.ScoreboardV2(game_date=us_date_str, headers=get_random_header(), timeout=25)
                 games = board.game_header.get_data_frame()
                 
                 if games.empty: 
@@ -246,7 +261,6 @@ def fetch_and_save_upcoming_games():
                     away_roster = get_recent_roster(away_abbr)
                     
                     def match_injuries(team_abbr, roster):
-                        import json
                         matched = []
                         for inj in espn_injuries.get(team_abbr, []):
                             for player in roster:
@@ -270,8 +284,9 @@ def fetch_and_save_upcoming_games():
                     })
                 break
             except Exception as e:
-                print(f"   ⚠️ 第 {attempt+1} 次連線失敗: {e}")
-                time.sleep(2)
+                err_msg = str(e).split("Caused by")[-1] if "Caused by" in str(e) else str(e)
+                print(f"   ⚠️ 第 {attempt+1} 次連線失敗: {err_msg}")
+                time.sleep(5) # 失敗的話等久一點再試
                 
         if len(upcoming_games) > 0: break
 
@@ -284,5 +299,4 @@ def fetch_and_save_upcoming_games():
         print("\n🤷‍♂️ 掃描完畢，未來 7 天內沒有找到任何未開打的賽事。")
 
 if __name__ == "__main__":
-    setup_proxy()
     fetch_and_save_upcoming_games()
