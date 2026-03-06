@@ -3,20 +3,19 @@ import numpy as np
 import os
 import joblib
 import warnings
-from datetime import datetime
+from xgboost import XGBClassifier
+from prepare_data import get_merged_dataframe
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # ⚙️ 設定與路徑區
 # ==========================================
-UPCOMING_CSV = 'data/upcoming_games.csv'
 MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
-MODEL_DIR = 'models/'  
-OUTPUT_PREDICTION = 'data/predictions_history_log.csv' 
+MODEL_DIR = 'models/'
 
 # ==========================================
-# 🏆 24 神聯軍全特徵定義 (18個賽道前三 + 6個瀑布流)
+# 🏆 24 神聯軍全特徵定義 (與預測腳本完全一致)
 # ==========================================
 ALL_MODELS = [
     # ---------------- 50G 賽道 ----------------
@@ -72,7 +71,7 @@ ALL_MODELS = [
     },
     {
         "name": "150G_Rank3", "track": "150G (Rank 3)",
-        "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_TEAM_ID', 'HOME_MISSING_DEF_RATING_SUM']
+        "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_MISSING_DEF_RATING_SUM']
     },
 
     # ---------------- 200G 賽道 ----------------
@@ -130,140 +129,87 @@ ALL_MODELS = [
     }
 ]
 
-def load_latest_features():
-    print("🔍 正在從特徵大表提取各隊最新實力指標...")
-    df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
-    df_master = df_master.fillna(0)
+def load_training_data():
+    print("📥 1. 正在載入歷史特徵大表與比賽結果...")
     
-    # 🌟 防呆大絕招：強制把特徵大表的所有欄位都轉大寫，保證名稱絕對對應！
+    if not os.path.exists(MASTER_FEATURES_CSV):
+        raise FileNotFoundError(f"找不到特徵大表: {MASTER_FEATURES_CSV}")
+        
+    df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
     df_master.columns = [c.upper() for c in df_master.columns]
     
-    # 因為轉了大寫，原本的 home_team 會變成 HOME_TEAM
-    latest_home = df_master.drop_duplicates(subset=['HOME_TEAM'], keep='last').copy()
-    latest_away = df_master.drop_duplicates(subset=['AWAY_TEAM'], keep='last').copy()
+    # 填補空值以防報錯
+    df_master = df_master.fillna(0)
     
-    team_latest_home_stats = latest_home.set_index('HOME_TEAM').to_dict('index')
-    team_latest_away_stats = latest_away.set_index('AWAY_TEAM').to_dict('index')
+    # ---------------------------------------------------------
+    # 🎯 建立預測目標 (Target): 主隊是否獲勝 (HOME_WIN = 1 或 0)
+    # ---------------------------------------------------------
+    # 我們從 boxscore_base 來抓取比賽勝負結果
+    df_base = get_merged_dataframe("boxscore_base")
+    df_base.columns = [c.upper() for c in df_base.columns]
     
-    return team_latest_home_stats, team_latest_away_stats
+    # 只抓取主隊的數據列 (MATCHUP 包含 ' vs. ' 代表主場)
+    df_home = df_base[df_base['MATCHUP'].str.contains(' vs. ', na=False)].drop_duplicates('GAME_ID')
+    
+    # 建立勝負標籤 (PLUS_MINUS 大於 0 代表贏球)
+    if 'PLUS_MINUS' in df_home.columns:
+        df_home['HOME_WIN'] = (df_home['PLUS_MINUS'] > 0).astype(int)
+    elif 'WL' in df_home.columns:
+        df_home['HOME_WIN'] = (df_home['WL'] == 'W').astype(int)
+    else:
+        raise ValueError("無法在 boxscore_base 中找到勝負依據 (PLUS_MINUS 或 WL)！")
+        
+    # 將標籤合併回特徵大表
+    df_home['GAME_ID'] = df_home['GAME_ID'].astype(str).str.zfill(10)
+    df_master['GAME_ID'] = df_master['GAME_ID'].astype(str).str.zfill(10)
+    
+    df_train = df_master.merge(df_home[['GAME_ID', 'HOME_WIN']], on='GAME_ID', how='inner')
+    
+    print(f"   📊 成功配對 {len(df_train)} 場有效歷史賽事用於訓練。")
+    return df_train
 
-def predict_upcoming_games():
-    print(f"🚀 啟動 NBA {len(ALL_MODELS)}神聯軍全預測系統！ (全軍出擊模式)")
+def train_and_deploy_models(df_train):
+    print("\n🚀 2. 啟動 XGBoost 兵工廠，開始鍛造 24 把神兵利器...")
+    os.makedirs(MODEL_DIR, exist_ok=True)
     
-    if not os.path.exists(UPCOMING_CSV):
-        print("❌ 找不到今日賽程 (upcoming_games.csv)！今日可能無賽事。")
-        return
-        
-    upcoming_df = pd.read_csv(UPCOMING_CSV)
-    if upcoming_df.empty:
-        print("🤷‍♂️ 今日無賽事需要預測。")
-        return
-        
-    home_stats_dict, away_stats_dict = load_latest_features()
-    
-    models = {}
     for stage in ALL_MODELS:
         m_name = stage['name']
+        features = stage['features']
+        
+        # 防呆檢查：確保所有要求的特徵都在表裡面，如果沒有就補 0
+        missing_cols = [f for f in features if f not in df_train.columns]
+        for col in missing_cols:
+            df_train[col] = 0
+            
+        X = df_train[features]
+        y = df_train['HOME_WIN']
+        
+        # XGBoost 參數設定 (通用高勝率設定)
+        model = XGBClassifier(
+            n_estimators=120,       # 樹的數量
+            learning_rate=0.05,     # 學習率
+            max_depth=4,            # 樹的深度 (避免過擬合)
+            subsample=0.8,          # 隨機抽取 80% 樣本訓練
+            colsample_bytree=0.8,   # 隨機抽取 80% 特徵訓練
+            random_state=42,        # 固定亂數種子，保證每次訓練結果一致
+            eval_metric='logloss'
+        )
+        
+        # 開始訓練
+        model.fit(X, y)
+        
+        # 儲存模型為 .pkl 檔
         model_path = os.path.join(MODEL_DIR, f"{m_name}.pkl")
-        if os.path.exists(model_path):
-            models[m_name] = joblib.load(model_path)
-        else:
-            print(f"⚠️ 警告: 找不到模型檔案 {model_path}")
-    
-    if not models:
-        print("❌ 沒有任何可用的模型，預測中止。請確認 models/ 資料夾內有對應的 .pkl 檔案！")
-        return
-
-    predictions_log = []
-    run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    print(f"\n🎯 今日共有 {len(upcoming_df)} 場賽事，開始進行 AI 全面分析...\n" + "="*60)
-    
-    for _, row in upcoming_df.iterrows():
-        home_team = row['home_team']
-        away_team = row['away_team']
-        game_date = row['game_date']
-        matchup_name = f"{away_team} @ {home_team}"
+        joblib.dump(model, model_path)
         
-        home_features = home_stats_dict.get(home_team, {})
-        away_features = away_stats_dict.get(away_team, {})
+        print(f"   ✅ [{m_name:<12}] 訓練完成並已部署！ (特徵數: {len(features)})")
         
-        today_context = {
-            "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
-            "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
-        }
-        
-        print(f"🏀 {matchup_name}")
-        
-        # 強制讓清單上「所有模型」都跑一次！
-        for stage in ALL_MODELS:
-            m_name = stage['name']
-            if m_name not in models: continue
-            
-            X_input = {}
-            for feat in stage['features']:
-                # 確保我們查詢的特徵名稱也都是大寫
-                feat_upper = feat.upper()
-                if feat_upper in today_context:
-                    X_input[feat_upper] = today_context[feat_upper]
-                elif feat_upper.startswith('HOME_'):
-                    X_input[feat_upper] = home_features.get(feat_upper, 0)
-                elif feat_upper.startswith('AWAY_'):
-                    X_input[feat_upper] = away_features.get(feat_upper, 0)
-                else:
-                    X_input[feat_upper] = 0
-            
-            X_df = pd.DataFrame([X_input])
-            
-            # 取得預測機率
-            prob = models[m_name].predict_proba(X_df)[0]
-            home_win_prob = prob[1]
-            
-            confidence = max(prob[0], prob[1])
-            predicted_winner = home_team if home_win_prob >= 0.5 else away_team
-            
-            # 記錄每一個模型的結果
-            prediction_record = {
-                "Run_Time": run_timestamp,
-                "Game_Date": game_date,
-                "Matchup": matchup_name,
-                "Model_Used": m_name,
-                "Track_Name": stage['track'],
-                "Predicted_Winner": predicted_winner,
-                "Confidence_Pct": round(confidence * 100, 2)
-            }
-            predictions_log.append(prediction_record)
-            
-            # 印出該模型結果 (排版對齊，看起來更專業)
-            print(f"   📊 [{m_name:<15} | {stage['track']:<18}] 預測: {predicted_winner:<3} (信心: {round(confidence*100, 2)}%)")
-            
-        print("-" * 60)
-
-    # ==========================================
-    # 💾 智慧覆蓋與追加 (Upsert) 寫入 CSV
-    # ==========================================
-    if predictions_log:
-        df_new = pd.DataFrame(predictions_log)
-        os.makedirs(os.path.dirname(OUTPUT_PREDICTION), exist_ok=True)
-        
-        if os.path.exists(OUTPUT_PREDICTION):
-            try:
-                # 讀取既有紀錄
-                df_history = pd.read_csv(OUTPUT_PREDICTION)
-                # 將新舊資料合併
-                df_combined = pd.concat([df_history, df_new], ignore_index=True)
-                # 日期 + 對戰 + 模型名稱 作為唯一鍵值去重
-                df_combined = df_combined.drop_duplicates(subset=['Game_Date', 'Matchup', 'Model_Used'], keep='last')
-            except Exception as e:
-                print(f"⚠️ 讀取歷史紀錄失敗，將直接覆蓋: {e}")
-                df_combined = df_new
-        else:
-            df_combined = df_new
-            
-        # 覆蓋寫入
-        df_combined.to_csv(OUTPUT_PREDICTION, index=False, encoding='utf-8-sig')
-        
-        print(f"\n✅ 今日預測完畢！總計 {len(predictions_log)} 筆預測結果已成功【更新/追加】至: {OUTPUT_PREDICTION}")
+    print(f"\n🎉 恭喜！24 個 MLOps 模型已全數部署至 {MODEL_DIR} 目錄！")
+    print("👉 現在你可以安心執行 predict_today.py 來進行賽事預測了！")
 
 if __name__ == "__main__":
-    predict_upcoming_games()
+    try:
+        df_dataset = load_training_data()
+        train_and_deploy_models(df_dataset)
+    except Exception as e:
+        print(f"❌ 訓練管線發生錯誤: {e}")

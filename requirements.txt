@@ -6,3 +6,6 @@ requests
 pytz
 tqdm
 curl_cffi
+scikit-learn
+xgboost
+joblib
