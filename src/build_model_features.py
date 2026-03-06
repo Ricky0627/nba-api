@@ -83,28 +83,23 @@ def engineer_rolling_features(df):
         df['Q1_Q3_GAP'] = df['Q1_PTS'] - df['Q3_PTS']
         metrics.append('Q1_Q3_GAP')
     
-    # 🔥 關鍵修復：把新欄位的生成移到 groupby 之前！
     if 'MATCHUP' in df.columns:
         df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
     else:
         df['IS_AWAY'] = 0
         
-    # 建立分組
     grouped = df.groupby(['SEASON_YEAR', 'TEAM_ID'])
     
-    # A. 基礎滾動平均
     windows = {'L3': 3, 'L5': 5, 'L10': 10}
     for w_name, w_size in windows.items():
         rolled = grouped[metrics].apply(lambda x: x.shift(1).rolling(w_size, min_periods=1).mean()).reset_index(level=[0,1], drop=True)
         rolled.columns = [f"{c}_{w_name}" for c in rolled.columns]
         df = df.join(rolled)
         
-    # B. 賽季至今平均
     s2d = grouped[metrics].apply(lambda x: x.shift(1).expanding(min_periods=1).mean()).reset_index(level=[0,1], drop=True)
     s2d.columns = [f"{c}_S2D" for c in s2d.columns]
     df = df.join(s2d)
     
-    # C. 特殊與降維指標
     if 'OFF_RATING' in df.columns:
         df['OFF_RATING_L10_STD'] = grouped['OFF_RATING'].apply(lambda x: x.shift(1).rolling(10, min_periods=2).std()).reset_index(level=[0,1], drop=True)
     
@@ -116,7 +111,6 @@ def engineer_rolling_features(df):
     df['REST_DAYS'] = df['REST_DAYS'].fillna(3).clip(upper=5) 
     df['IS_B2B'] = (df['REST_DAYS'] == 0).astype(int)
     
-    # 計算客場連戰
     def calc_away_streak(s):
         streak = 0
         res = []
@@ -146,7 +140,11 @@ def build_final_master_table(df_features):
     keep_cols += [c for c in df_features.columns if c.endswith(('_L3', '_L5', '_L10', '_S2D'))]
     df_feat_clean = df_features[keep_cols].copy()
     
-    team_mapping = get_merged_dataframe("games")[['game_id', 'home_team_id', 'visitor_team_id']].drop_duplicates()
+    # 🔥 關鍵修復：把 games 表格的欄位強制轉小寫 🔥
+    games_df = get_merged_dataframe("games")
+    games_df.columns = [c.lower() for c in games_df.columns]
+    team_mapping = games_df[['game_id', 'home_team_id', 'visitor_team_id']].drop_duplicates()
+    
     team_mapping['game_id'] = team_mapping['game_id'].astype(str).str.zfill(10)
     team_mapping['home_team_id'] = team_mapping['home_team_id'].astype(str)
     team_mapping['visitor_team_id'] = team_mapping['visitor_team_id'].astype(str)
