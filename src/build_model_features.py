@@ -135,22 +135,16 @@ def build_final_master_table(df_features):
     
     df_features['GAME_ID'] = df_features['GAME_ID'].astype(str).str.zfill(10)
     
-    # 🔥 關鍵修復：直接抓取 TEAM_ABBREVIATION 來對接
     keep_cols = ['GAME_ID', 'TEAM_ABBREVIATION', 'REST_DAYS', 'IS_B2B', 'AWAY_STREAK', 'EFFICIENCY_TREND', 'OFF_RATING_L10_STD']
-    keep_cols = [c for c in keep_cols if c in df_features.columns] # 防呆保護
+    keep_cols = [c for c in keep_cols if c in df_features.columns]
     keep_cols += [c for c in df_features.columns if c.endswith(('_L3', '_L5', '_L10', '_S2D'))]
     df_feat_clean = df_features[keep_cols].copy()
     
-    # 刪除了讀取 games 表格的邏輯，直接進入對接！
-
     # ==== 對接主隊 (HOME) ====
     home_feats = df_feat_clean.copy()
-    # 除了 ID 和縮寫，其他的全部加上 HOME_ 前綴
     home_feats.columns = [f"HOME_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in home_feats.columns]
-    # 直接用縮寫 (home_team) 對縮寫 (TEAM_ABBREVIATION) 合併
     final_df = final_df.merge(home_feats, left_on=['game_id', 'home_team'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='left')
     
-    # 清理用完的過渡欄位
     if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
     if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
 
@@ -162,8 +156,34 @@ def build_final_master_table(df_features):
     if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
     if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
 
-    # 清除空值
+    # 🔥 神級改造：從資料庫直接提取 Target 需要的歷史賠率與淨勝分
+    print("   🔗 正在寫入預測目標 (TW_SPREAD_SCORE & PLUS_MINUS)...")
+    
+    # 1. 抓取歷史賠率 (games表)
+    games_df = get_merged_dataframe("games")
+    games_df.columns = [c.upper() for c in games_df.columns]
+    if 'TW_SPREAD_SCORE' in games_df.columns:
+        odds_df = games_df[['GAME_ID', 'TW_SPREAD_SCORE']].drop_duplicates()
+        odds_df['GAME_ID'] = odds_df['GAME_ID'].astype(str).str.zfill(10)
+        final_df = final_df.merge(odds_df, left_on='game_id', right_on='GAME_ID', how='left')
+        if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
+        print("      ✅ 成功併入 TW_SPREAD_SCORE (台灣運彩讓分)！")
+    
+    # 2. 抓取主隊淨勝分 (boxscore_base表)
+    base_df = get_merged_dataframe("boxscore_base")
+    base_df.columns = [c.upper() for c in base_df.columns]
+    if 'PLUS_MINUS' in base_df.columns and 'MATCHUP' in base_df.columns:
+        home_base = base_df[base_df['MATCHUP'].str.contains(' vs. ', na=False)].drop_duplicates('GAME_ID')
+        home_base = home_base[['GAME_ID', 'PLUS_MINUS']]
+        home_base['GAME_ID'] = home_base['GAME_ID'].astype(str).str.zfill(10)
+        final_df = final_df.merge(home_base, left_on='game_id', right_on='GAME_ID', how='left')
+        if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
+        print("      ✅ 成功併入 PLUS_MINUS (主隊淨勝分)！")
+
     final_df = final_df.fillna(0)
+    
+    # 統一轉換為大寫名稱，防呆機制
+    final_df.rename(columns={'game_id': 'GAME_ID', 'home_team': 'HOME_TEAM', 'away_team': 'AWAY_TEAM'}, inplace=True)
     
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     final_df.to_csv(OUTPUT_CSV, index=False)
