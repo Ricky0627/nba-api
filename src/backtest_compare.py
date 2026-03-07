@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # ⚙️ 設定區
 # ==========================================
-MASTER_FEATURES_CSV = 'data/ml_features_master.csv' 
+MASTER_FEATURES_CSV = 'data/ml_features_master.csv' # GitHub 路徑
 
 TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
 TEST_SEASON = ['2025-26']
@@ -104,7 +104,7 @@ ALL_MODELS = [
     },
     {
         "name": "M079", "track": "King (70G 狙擊手)",
-        "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'AWAY_STREAK_HOME', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
+        "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_AWAY_STREAK', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
     },
     {
         "name": "M092", "track": "King (100G 主力)",
@@ -126,15 +126,42 @@ ALL_MODELS = [
 
 def run_github_backtest():
     print("="*85)
-    print("🚀 啟動 GitHub 專用：讓分盤靜態回測引擎 (完美還原 Local 62% 環境)")
+    print("🚀 啟動 GitHub 專用：讓分盤靜態回測引擎 (自動欄位轉化版)")
     print("="*85)
 
     try:
         df = pd.read_csv(MASTER_FEATURES_CSV)
-        print(f"✅ 成功載入特徵大表，共 {len(df)} 筆資料")
+        
+        # 1. 自動轉大寫
+        df.columns = [str(c).upper() for c in df.columns]
+
+        # 🔥 2. 自動變形器：把大表的 _HOME, _AWAY 後綴，無痛轉換成 HOME_, AWAY_ 前綴！
+        new_cols = []
+        for c in df.columns:
+            if c.endswith('_HOME'):
+                new_cols.append('HOME_' + c[:-5])
+            elif c.endswith('_AWAY'):
+                new_cols.append('AWAY_' + c[:-5])
+            else:
+                new_cols.append(c)
+        df.columns = new_cols
+
+        print(f"✅ 成功載入特徵大表並轉換欄位，共 {len(df)} 筆資料")
+        
     except FileNotFoundError:
-        print(f"❌ 找不到 {MASTER_FEATURES_CSV}，請確認是否先執行過特徵生成。")
+        print(f"❌ 找不到 {MASTER_FEATURES_CSV}，請確認是否先產生了大表。")
         return
+    except Exception as e:
+        print(f"❌ 讀取發生錯誤: {e}")
+        return
+
+    # 計算淨勝分
+    if 'PLUS_MINUS' not in df.columns:
+        if 'HOME_SCORE' in df.columns and 'AWAY_SCORE' in df.columns:
+            df['PLUS_MINUS'] = df['HOME_SCORE'] - df['AWAY_SCORE']
+        else:
+            print("❌ 資料庫缺少 PLUS_MINUS，也找不到 HOME_SCORE 與 AWAY_SCORE 來計算淨勝分！")
+            return
 
     if 'TW_SPREAD_SCORE' not in df.columns:
         print("❌ 特徵大表中缺少台灣運彩盤口 TW_SPREAD_SCORE！無法進行讓分盤回測。")
@@ -143,16 +170,21 @@ def run_github_backtest():
     # 過濾空盤口並計算勝負 Target
     df['TW_SPREAD_SCORE'] = pd.to_numeric(df['TW_SPREAD_SCORE'], errors='coerce')
     df = df[(df['TW_SPREAD_SCORE'] != 0) & (df['TW_SPREAD_SCORE'].notna())]
-    
-    if 'PLUS_MINUS' not in df.columns:
-        print("❌ 特徵大表中缺少 PLUS_MINUS。")
-        return
-        
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
 
+    # 自動辨識賽季欄位名稱
+    season_col = None
+    if 'SEASON' in df.columns:
+        season_col = 'SEASON'
+    elif 'SEASON_YEAR' in df.columns:
+        season_col = 'SEASON_YEAR'
+    else:
+        print("❌ 找不到賽季欄位 (SEASON 或 SEASON_YEAR)！無法劃分訓練與測試集。")
+        return
+
     # 劃分訓練與測試集
-    train_df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS)].copy()
-    test_df = df[df['SEASON_YEAR'].isin(TEST_SEASON)].copy()
+    train_df = df[df[season_col].isin(TRAIN_SEASONS)].copy()
+    test_df = df[df[season_col].isin(TEST_SEASON)].copy()
 
     y_train = train_df['HOME_WIN'].values
     y_test = test_df['HOME_WIN'].values
@@ -162,23 +194,24 @@ def run_github_backtest():
     print(f"{'模型名稱':<15} | {'賽道屬性':<18} | {'全覆蓋勝率 (硬猜)':<20} | {'高信心勝率 (>53%)':<18}")
     print("-" * 85)
 
-    results = []
-    
     for stage in ALL_MODELS:
         m_name = stage['name']
         features = stage['features']
 
+        # 安全機制：確保所有需要的特徵都在 DataFrame 中，若無則報警並補 0
         missing_cols = [f for f in features if f not in train_df.columns]
         if missing_cols:
-            print(f"⚠️ 警告: {m_name} 找不到特徵: {missing_cols[:3]}... 已自動補 0")
-            for col in missing_cols:
-                train_df[col] = 0
-                test_df[col] = 0
+            print(f"⚠️ 警告: {m_name} 還是有找不到的特徵: {missing_cols[:3]}...")
             
+        for col in missing_cols:
+            train_df[col] = 0
+            test_df[col] = 0
+            
+        # 完美補齊 .fillna(0)
         X_train = train_df[features].fillna(0)
         X_test = test_df[features].fillna(0)
 
-        # 嚴格鎖定窮舉時防過擬合的 XGBoost 參數
+        # 嚴格鎖定窮舉時防過擬合的 XGBoost 參數 (50棵樹, 深度3)
         model = XGBClassifier(
             n_estimators=50, 
             learning_rate=0.05, 
@@ -194,9 +227,11 @@ def run_github_backtest():
         model.fit(X_train, y_train)
         probs = model.predict_proba(X_test)[:, 1]
 
+        # 評估 A：全覆蓋勝率
         preds_all = (probs >= 0.5).astype(int)
         acc_all = np.mean(preds_all == y_test)
 
+        # 評估 B：高信心勝率
         high_conf_mask = (probs >= SNIPER_THRESHOLD) | (probs <= (1 - SNIPER_THRESHOLD))
         bets = high_conf_mask.sum()
         
@@ -211,7 +246,7 @@ def run_github_backtest():
         print(f"{m_name:<15} | {stage['track']:<18} | {acc_all_str:<20} | {acc_high_str:<18}")
 
     print("="*85)
-    print("✅ Github 回測完畢！完美還原 Local 環境！")
+    print("✅ GitHub 回測完畢！你可以清楚看到各模型的強大實力！")
 
 if __name__ == "__main__":
     run_github_backtest()
