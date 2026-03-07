@@ -76,18 +76,18 @@ def split_database():
             hist_sql = f"INSERT INTO hist.{table} SELECT * FROM {table} WHERE {col} != '{CURRENT_SEASON}'"
             
         elif 'GAME_ID' in col_names_upper:
-            # 第三類：只有 GAME_ID，需關聯 games 表判定賽季 (如 team_features_clutch)
+            # 第三類：只有 GAME_ID，需關聯 games 表判定賽季
             col = columns[col_names_upper.index('GAME_ID')]
             curr_sql = f"""
                 INSERT INTO curr.{table} 
                 SELECT t.* FROM {table} t 
-                JOIN games g ON t.{col} = g.game_id 
+                JOIN games g ON CAST(t.{col} AS INTEGER) = CAST(g.game_id AS INTEGER)
                 WHERE g.season = '{CURRENT_SEASON}'
             """
             hist_sql = f"""
                 INSERT INTO hist.{table} 
                 SELECT t.* FROM {table} t 
-                JOIN games g ON t.{col} = g.game_id 
+                JOIN games g ON CAST(t.{col} AS INTEGER) = CAST(g.game_id AS INTEGER)
                 WHERE g.season != '{CURRENT_SEASON}'
             """
         else:

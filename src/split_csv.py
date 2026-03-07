@@ -55,8 +55,8 @@ def split_play_by_play_csv():
         for row in reader:
             # 確保該行資料長度足夠，避免空行或不完整的資料報錯
             if len(row) > game_id_idx:
-                game_id = str(row[game_id_idx]).strip()
-                
+                game_id = str(row[game_id_idx]).strip().split('.')[0].zfill(10)
+                # split('.')[0] 是為了防止有時候被轉成浮點數字串 '22500001.0'
                 # 判斷是否為新賽季
                 if game_id.startswith(NEW_SEASON_PREFIXES):
                     writer_curr.writerow(row)
