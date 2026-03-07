@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # ⚙️ 設定區
 # ==========================================
-MASTER_FEATURES_CSV = 'data/ml_features_master.csv' 
+MASTER_FEATURES_CSV = 'data/final_features.csv' 
 
 TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
 TEST_SEASON = ['2025-26']
