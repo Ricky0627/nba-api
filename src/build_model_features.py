@@ -40,9 +40,7 @@ def load_and_merge_team_logs():
     
     avail_adv_cols = [c for c in ['PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE'] if c in df_adv.columns]
     
-    # 從 base 開始，保證基底最穩固
     df_master = df_base[base_cols].copy()
-    
     df_master = df_master.merge(df_adv[['GAME_ID', 'TEAM_ID'] + avail_adv_cols], on=['GAME_ID', 'TEAM_ID'], how='left')
 
     score_cols = [c for c in ['PCT_PTS_3PT', 'PCT_PTS_PAINT', 'PCT_AST_FGM'] if c in df_score.columns]
@@ -71,7 +69,7 @@ def load_and_merge_team_logs():
     return df_master
 
 def engineer_rolling_features(df):
-    print("⏳ 2. 嚴格防洩漏：計算時間切片與衍生特徵 (完全還原原始神級腳本邏輯)...")
+    print("⏳ 2. 嚴格防洩漏：計算時間切片與衍生特徵...")
     
     target_metrics = [
         'PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE',
@@ -85,7 +83,6 @@ def engineer_rolling_features(df):
     df.columns = [c.upper() for c in df.columns]
     metrics = [c for c in target_metrics if c in df.columns]
     
-    # 建立字典收集滾動特徵
     rolling_features = {}
     
     for col in metrics:
@@ -98,7 +95,6 @@ def engineer_rolling_features(df):
     
     other_feats = {}
     
-    # 穩定度與趨勢
     if 'OFF_RATING' in df.columns:
         other_feats['OFF_RATING_L10_STD'] = df.groupby(['TEAM_ID', 'SEASON_YEAR'])['OFF_RATING'].transform(
             lambda x: x.shift(1).rolling(10, min_periods=3).std()
@@ -106,7 +102,6 @@ def engineer_rolling_features(df):
     if 'OFF_RATING_L5' in df.columns and 'OFF_RATING_S2D' in df.columns:
         other_feats['EFFICIENCY_TREND'] = df['OFF_RATING_L5'] - df['OFF_RATING_S2D']
     
-    # 體力與客場之旅
     other_feats['REST_DAYS'] = df.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
     other_feats['IS_B2B'] = (other_feats['REST_DAYS'] == 1).astype(int)
     
@@ -117,45 +112,33 @@ def engineer_rolling_features(df):
     return df
 
 def build_final_master_table(df_features):
-    print("🥞 3. 正在縫合最終的機器學習特徵寬表 (還原暴力對接法)...")
+    print("🥞 3. 正在縫合最終的機器學習特徵寬表 (手動修正前綴 HOME_/AWAY_)...")
     
     games_raw = get_merged_dataframe("games")
     games_raw.columns = [c.upper() for c in games_raw.columns]
     
-    # 使用 games_raw 作為主幹
     final_games = games_raw[['GAME_ID', 'DATE', 'SEASON', 'HOME_TEAM', 'AWAY_TEAM', 'HOME_SCORE', 'AWAY_SCORE', 'TW_SPREAD_SCORE']].copy()
     final_games['GAME_ID'] = final_games['GAME_ID'].astype(str).str.zfill(10)
     
-    # 提取算好的特徵
     df_features.columns = [c.upper() for c in df_features.columns]
     df_features['GAME_ID'] = df_features['GAME_ID'].astype(str).str.zfill(10)
     feature_cols = [c for c in df_features.columns if '_L' in c or '_S2D' in c or 'TREND' in c or 'STD' in c or 'REST' in c or 'B2B' in c or 'STREAK' in c]
     
-    feats_subset = df_features[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols]
+    # 🚨 關鍵修復：手動加上 HOME_ 前綴！
+    home_feats = df_features[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols].copy()
+    home_feats.columns = [f"HOME_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in home_feats.columns]
     
-    # 主隊特徵暴力合併
-    final_df = final_games.merge(
-        feats_subset, 
-        left_on=['GAME_ID', 'HOME_TEAM'], 
-        right_on=['GAME_ID', 'TEAM_ABBREVIATION'], 
-        how='inner' 
-    )
+    # 🚨 關鍵修復：手動加上 AWAY_ 前綴！
+    away_feats = df_features[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols].copy()
+    away_feats.columns = [f"AWAY_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in away_feats.columns]
     
-    # 客隊特徵暴力合併
-    final_df = final_df.merge(
-        feats_subset, 
-        left_on=['GAME_ID', 'AWAY_TEAM'], 
-        right_on=['GAME_ID', 'TEAM_ABBREVIATION'], 
-        how='inner', 
-        suffixes=('_HOME', '_AWAY')
-    )
-
-    cols_to_drop = [c for c in final_df.columns if c.startswith('TEAM_ABBREVIATION')]
-    final_df = final_df.drop(columns=cols_to_drop)
+    # 主客隊分別合併 (不再使用 suffixes)
+    final_df = final_games.merge(home_feats, left_on=['GAME_ID', 'HOME_TEAM'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='inner')
+    final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
     
-    # ---------------------------------------------------------
-    # 🚑 4. 動態傷病特徵整合 (從傷病表中撈出 MISSING 數據)
-    # ---------------------------------------------------------
+    final_df = final_df.merge(away_feats, left_on=['GAME_ID', 'AWAY_TEAM'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='inner')
+    final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
+    
     print("   🚑 正在整合傷兵折損特徵 (MISSING_STATS)...")
     INJURY_CSV = 'data/nba_advanced_injury_features.csv'
     if os.path.exists(INJURY_CSV):
@@ -163,26 +146,16 @@ def build_final_master_table(df_features):
         injury_df.columns = [c.upper() for c in injury_df.columns]
         injury_df['GAME_ID'] = injury_df['GAME_ID'].astype(str).str.zfill(10)
         
-        # 挑出傷病特徵
         missing_cols = [c for c in injury_df.columns if 'MISSING' in c]
         if missing_cols:
             injury_subset = injury_df[['GAME_ID'] + missing_cols]
             final_df = final_df.merge(injury_subset, on='GAME_ID', how='left')
-    else:
-        print("   ⚠️ 找不到傷兵表，跳過傷兵特徵整合。")
 
-    # 計算 PLUS_MINUS
     final_df['PLUS_MINUS'] = final_df['HOME_SCORE'] - final_df['AWAY_SCORE']
     final_df = final_df.fillna(0)
-    
-    # 將日期統一名稱
     final_df.rename(columns={'DATE': 'GAME_DATE', 'SEASON': 'SEASON_YEAR'}, inplace=True)
 
-    # =========================================================
-    # 🎯 5. 終極特徵瘦身：只保留這 24 把模型會用到的特徵！
-    # =========================================================
-    print("   ✂️ 正在進行終極特徵瘦身 (只保留神聯軍需要的欄位)...")
-    
+    # ---------------- 24 神聯軍 ----------------
     ALL_MODELS = [
         # ---------------- 50G 賽道 ----------------
         {
