@@ -131,12 +131,16 @@ def run_static_backtest():
 
     try:
         df = pd.read_csv(MASTER_FEATURES_CSV)
+        
+        # 🔥 終極防呆機制：強制將資料表的所有欄位轉成全大寫！(解決 KeyError: 'SEASON' 與特徵找不到的問題)
+        df.columns = [str(c).upper() for c in df.columns]
+        
         print(f"✅ 成功載入特徵大表，共 {len(df)} 筆資料")
     except Exception as e:
         print(f"❌ 無法讀取 {MASTER_FEATURES_CSV}，錯誤: {e}")
         return
 
-    # 防呆檢查
+    # 防呆檢查 (現在欄位一定都是大寫了)
     if 'TW_SPREAD_SCORE' not in df.columns or 'PLUS_MINUS' not in df.columns:
         print("❌ 特徵大表中缺少 TW_SPREAD_SCORE 或 PLUS_MINUS！請確認資料來源。")
         return
@@ -149,6 +153,8 @@ def run_static_backtest():
     # 劃分訓練與測試集
     train_df = df[df['SEASON'].isin(TRAIN_SEASONS)].copy()
     test_df = df[df['SEASON'].isin(TEST_SEASON)].copy()
+    
+    # ... 後面照舊 ...
 
     y_train = train_df['HOME_WIN'].values
     y_test = test_df['HOME_WIN'].values
