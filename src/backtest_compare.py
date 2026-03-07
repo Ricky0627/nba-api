@@ -139,12 +139,22 @@ def load_data_for_backtest():
     print("📥 正在載入已包含賠率的特徵大表...")
     df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
     df_master.columns = [c.upper() for c in df_master.columns]
+    df_master['GAME_ID'] = df_master['GAME_ID'].astype(str).str.zfill(10)
     
-    if 'TW_SPREAD_SCORE' not in df_master.columns or 'PLUS_MINUS' not in df_master.columns:
-        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！請確保已執行 build_model_features.py。")
-        
     df = df_master.copy()
     
+    # 🔥 神級補丁：如果特徵大表裡沒有 GAME_DATE，我們直接從資料庫撈出來補上去！
+    if 'GAME_DATE' not in df.columns:
+        print("   🔍 發現大表缺少 GAME_DATE，自動從 boxscore_base 撈取補齊...")
+        df_base = get_merged_dataframe("boxscore_base")
+        df_base.columns = [c.upper() for c in df_base.columns]
+        df_dates = df_base[['GAME_ID', 'GAME_DATE']].drop_duplicates()
+        df_dates['GAME_ID'] = df_dates['GAME_ID'].astype(str).str.zfill(10)
+        df = df.merge(df_dates, on='GAME_ID', how='left')
+        
+    if 'TW_SPREAD_SCORE' not in df.columns or 'PLUS_MINUS' not in df.columns:
+        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！請確保已執行 build_model_features.py。")
+        
     # 濾除無效盤口
     df['TW_SPREAD_SCORE'] = pd.to_numeric(df['TW_SPREAD_SCORE'], errors='coerce')
     df = df[(df['TW_SPREAD_SCORE'] != 0) & (df['TW_SPREAD_SCORE'].notna())]
@@ -154,10 +164,12 @@ def load_data_for_backtest():
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
     
     # 將日期轉為 datetime 格式，並排序
-    if 'GAME_DATE' not in df.columns:
-        raise ValueError("特徵大表缺少 GAME_DATE，無法進行時間軸回測！")
+    if 'GAME_DATE' not in df.columns or df['GAME_DATE'].isna().all():
+        raise ValueError("❌ 依然無法取得 GAME_DATE，請檢查資料庫！")
     
-    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
+    # 確保日期格式乾淨 (只取 YYYY-MM-DD)
+    df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'].str[:10]) 
+    df = df.dropna(subset=['GAME_DATE']) # 確保沒有空日期
     df = df.sort_values('GAME_DATE').reset_index(drop=True)
     
     return df
@@ -201,7 +213,7 @@ def run_arena():
         rolling_correct = 0
         total_games = 0
 
-        # 開始逐日模擬 (大約 100 多天)
+        # 開始逐日模擬
         for current_date in test_dates:
             day_test = df[df['GAME_DATE'] == current_date]
             X_test = day_test[features]
