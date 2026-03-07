@@ -1,3 +1,5 @@
+from pyexpat import features
+
 import pandas as pd
 import numpy as np
 import os
@@ -210,11 +212,12 @@ def run_github_backtest():
             train_df[col] = 0
             test_df[col] = 0
             
-        # 完美補齊 .fillna(0)
-        X_train = train_df[features].fillna(0)
-        X_test = test_df[features].fillna(0)
+        # 在選取特徵後加入 astype
+        X_train = train_df[features].fillna(0).astype('float32')
+        X_test = test_df[features].fillna(0).astype('float32')
 
         # 嚴格鎖定窮舉時防過擬合的 XGBoost 參數 (50棵樹, 深度3, hist演算法)
+        # 在 backtest_compare.py 中修改模型參數
         model = XGBClassifier(
             n_estimators=50, 
             learning_rate=0.05, 
@@ -223,9 +226,10 @@ def run_github_backtest():
             colsample_bytree=0.8,
             eval_metric='logloss',
             random_state=42,
-            tree_method='hist', 
-            n_jobs=-1
-        )
+            # --- 👇 關鍵修改：強制對齊邏輯 👇 ---
+            tree_method='exact',  # 將 'hist' 改為 'exact' (排除分箱演算法的環境差異)
+            n_jobs=1              # 強制單核心執行 (排除多線程調度隨機性)
+)
 
         model.fit(X_train, y_train)
         probs = model.predict_proba(X_test)[:, 1]
