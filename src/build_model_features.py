@@ -11,7 +11,6 @@ warnings.filterwarnings('ignore')
 # ⚙️ 設定區
 # ==========================================
 OUTPUT_CSV = 'data/ml_features_master.csv'
-INJURY_CSV = 'data/nba_advanced_injury_features.csv'
 
 def load_and_merge_team_logs():
     print("📥 1. 載入並合併所有基礎與進階數據庫...")
@@ -35,12 +34,16 @@ def load_and_merge_team_logs():
             if 'GAME_ID' in df.columns:
                 df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
             if 'TEAM_ID' in df.columns:
-                df['TEAM_ID'] = df['TEAM_ID'].astype(str)
+                df['TEAM_ID'] = df['TEAM_ID'].astype(int)
 
-    base_cols = ['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'GAME_DATE', 'SEASON_YEAR', 'MATCHUP']
+    base_cols = ['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'MATCHUP', 'GAME_DATE', 'SEASON_YEAR', 'WL']
     
     avail_adv_cols = [c for c in ['PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE'] if c in df_adv.columns]
-    df_master = df_adv[base_cols + avail_adv_cols].copy()
+    
+    # 從 base 開始，保證基底最穩固
+    df_master = df_base[base_cols].copy()
+    
+    df_master = df_master.merge(df_adv[['GAME_ID', 'TEAM_ID'] + avail_adv_cols], on=['GAME_ID', 'TEAM_ID'], how='left')
 
     score_cols = [c for c in ['PCT_PTS_3PT', 'PCT_PTS_PAINT', 'PCT_AST_FGM'] if c in df_score.columns]
     if score_cols:
@@ -55,18 +58,20 @@ def load_and_merge_team_logs():
 
     for pbp_df in [df_clutch, df_shot, df_tov, df_mom, df_qtr]:
         if pbp_df.empty: continue
-        cols_to_use = [c for c in pbp_df.columns if c not in ['TEAM_ABBREVIATION', 'GAME_DATE', 'SEASON_YEAR', 'MATCHUP']] 
+        cols_to_use = [c for c in pbp_df.columns if c not in ['TEAM_ABBREVIATION', 'GAME_DATE', 'SEASON_YEAR', 'MATCHUP', 'WL']] 
         df_master = df_master.merge(pbp_df[cols_to_use], on=['GAME_ID', 'TEAM_ID'], how='left')
+
+    if 'Q1_PTS' in df_master.columns and 'Q3_PTS' in df_master.columns:
+        df_master['Q1_Q3_GAP'] = df_master['Q1_PTS'] - df_master['Q3_PTS']
 
     df_master['GAME_DATE'] = pd.to_datetime(df_master['GAME_DATE'].str[:10])
     df_master = df_master.sort_values(['TEAM_ID', 'GAME_DATE']).reset_index(drop=True)
-    
     df_master = df_master.fillna(0)
     
     return df_master
 
 def engineer_rolling_features(df):
-    print("⏳ 2. 嚴格防洩漏：計算時間切片與衍生特徵 (🚨已還原 Transform 確保絕對對齊)...")
+    print("⏳ 2. 嚴格防洩漏：計算時間切片與衍生特徵 (完全還原原始神級腳本邏輯)...")
     
     target_metrics = [
         'PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE',
@@ -74,22 +79,15 @@ def engineer_rolling_features(df):
         'CONTESTED_SHOTS', 'LOOSE_BALLS_RECOVERED', 'CHARGES_DRAWN', 'SCREEN_ASSISTS',
         'MID_FREQ', 'RIM_FREQ', 'MOREYBALL_INDEX', 
         'CLUTCH_TS_PCT', 'CLUTCH_TOV_PCT', 'RUNS_10_0_COUNT', 'MAX_UNANSWERED_RUN', 'RUN_DEFICIT_RECOVERY_RATE',
-        'LIVE_TOV_PCT'
+        'LIVE_TOV_PCT', 'Q1_Q3_GAP'
     ]
     
     df.columns = [c.upper() for c in df.columns]
     metrics = [c for c in target_metrics if c in df.columns]
     
-    if 'Q1_PTS' in df.columns and 'Q3_PTS' in df.columns:
-        df['Q1_Q3_GAP'] = df['Q1_PTS'] - df['Q3_PTS']
-        metrics.append('Q1_Q3_GAP')
-        
-    # ⚠️ 最關鍵的一步：確保資料完全依據球隊與時間排序，後續 transform 才能完美對齊
-    df = df.sort_values(['TEAM_ID', 'GAME_DATE']).reset_index(drop=True)
-    
+    # 建立字典收集滾動特徵
     rolling_features = {}
     
-    # 🚨 全面改回原始腳本的 .transform()，徹底消滅 Index 錯位 Bug！
     for col in metrics:
         group = df.groupby(['TEAM_ID', 'SEASON_YEAR'])[col]
         rolling_features[f'{col}_S2D'] = group.transform(lambda x: x.shift(1).expanding(min_periods=1).mean())
@@ -98,88 +96,209 @@ def engineer_rolling_features(df):
             
     df = pd.concat([df, pd.DataFrame(rolling_features)], axis=1)
     
-    # 🚨 修正 STD 啟動門檻與對齊
+    other_feats = {}
+    
+    # 穩定度與趨勢
     if 'OFF_RATING' in df.columns:
-        df['OFF_RATING_L10_STD'] = df.groupby(['TEAM_ID', 'SEASON_YEAR'])['OFF_RATING'].transform(
+        other_feats['OFF_RATING_L10_STD'] = df.groupby(['TEAM_ID', 'SEASON_YEAR'])['OFF_RATING'].transform(
             lambda x: x.shift(1).rolling(10, min_periods=3).std()
         )
-    
-    # 🚨 修正 Trend 邏輯 (改回進攻效率)
     if 'OFF_RATING_L5' in df.columns and 'OFF_RATING_S2D' in df.columns:
-        df['EFFICIENCY_TREND'] = df['OFF_RATING_L5'] - df['OFF_RATING_S2D']
+        other_feats['EFFICIENCY_TREND'] = df['OFF_RATING_L5'] - df['OFF_RATING_S2D']
     
-    # 體力與賽程 (完美對齊)
-    df['REST_DAYS'] = df.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
-    df['IS_B2B'] = (df['REST_DAYS'] == 1).astype(int)
+    # 體力與客場之旅
+    other_feats['REST_DAYS'] = df.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
+    other_feats['IS_B2B'] = (other_feats['REST_DAYS'] == 1).astype(int)
     
-    if 'MATCHUP' in df.columns:
-        df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
-    else:
-        df['IS_AWAY'] = 0
-        
-    df['AWAY_STREAK'] = df.groupby(['TEAM_ID', (df['IS_AWAY'] == 0).cumsum()])['IS_AWAY'].cumsum()
-    
+    df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
+    other_feats['AWAY_STREAK'] = df.groupby(['TEAM_ID', (df['IS_AWAY'] == 0).cumsum()])['IS_AWAY'].cumsum()
+
+    df = pd.concat([df, pd.DataFrame(other_feats)], axis=1)
     return df
 
 def build_final_master_table(df_features):
-    print("🧩 3. 將特徵合併至傷兵大表 (Base Table)...")
+    print("🥞 3. 正在縫合最終的機器學習特徵寬表 (還原暴力對接法)...")
     
-    if not os.path.exists(INJURY_CSV):
-        print(f"❌ 嚴重錯誤：找不到 {INJURY_CSV}！請先確保 generate_injury.py 已執行。")
-        return
-        
-    final_df = pd.read_csv(INJURY_CSV)
-    final_df['game_id'] = final_df['game_id'].astype(str).str.zfill(10)
+    games_raw = get_merged_dataframe("games")
+    games_raw.columns = [c.upper() for c in games_raw.columns]
     
+    # 使用 games_raw 作為主幹
+    final_games = games_raw[['GAME_ID', 'DATE', 'SEASON', 'HOME_TEAM', 'AWAY_TEAM', 'HOME_SCORE', 'AWAY_SCORE', 'TW_SPREAD_SCORE']].copy()
+    final_games['GAME_ID'] = final_games['GAME_ID'].astype(str).str.zfill(10)
+    
+    # 提取算好的特徵
+    df_features.columns = [c.upper() for c in df_features.columns]
     df_features['GAME_ID'] = df_features['GAME_ID'].astype(str).str.zfill(10)
+    feature_cols = [c for c in df_features.columns if '_L' in c or '_S2D' in c or 'TREND' in c or 'STD' in c or 'REST' in c or 'B2B' in c or 'STREAK' in c]
     
-    keep_cols = ['GAME_ID', 'TEAM_ABBREVIATION', 'REST_DAYS', 'IS_B2B', 'AWAY_STREAK', 'EFFICIENCY_TREND', 'OFF_RATING_L10_STD']
-    keep_cols = [c for c in keep_cols if c in df_features.columns]
-    keep_cols += [c for c in df_features.columns if c.endswith(('_L3', '_L5', '_L10', '_S2D'))]
-    df_feat_clean = df_features[keep_cols].copy()
+    feats_subset = df_features[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols]
     
-    # ==== 對接主隊 (HOME) ====
-    home_feats = df_feat_clean.copy()
-    home_feats.columns = [f"HOME_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in home_feats.columns]
-    final_df = final_df.merge(home_feats, left_on=['game_id', 'home_team'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='left')
+    # 主隊特徵暴力合併
+    final_df = final_games.merge(
+        feats_subset, 
+        left_on=['GAME_ID', 'HOME_TEAM'], 
+        right_on=['GAME_ID', 'TEAM_ABBREVIATION'], 
+        how='inner' 
+    )
     
-    if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-    if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
+    # 客隊特徵暴力合併
+    final_df = final_df.merge(
+        feats_subset, 
+        left_on=['GAME_ID', 'AWAY_TEAM'], 
+        right_on=['GAME_ID', 'TEAM_ABBREVIATION'], 
+        how='inner', 
+        suffixes=('_HOME', '_AWAY')
+    )
 
-    # ==== 對接客隊 (AWAY) ====
-    away_feats = df_feat_clean.copy()
-    away_feats.columns = [f"AWAY_{c}" if c not in ['GAME_ID', 'TEAM_ABBREVIATION'] else c for c in away_feats.columns]
-    final_df = final_df.merge(away_feats, left_on=['game_id', 'away_team'], right_on=['GAME_ID', 'TEAM_ABBREVIATION'], how='left')
+    cols_to_drop = [c for c in final_df.columns if c.startswith('TEAM_ABBREVIATION')]
+    final_df = final_df.drop(columns=cols_to_drop)
     
-    if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-    if 'TEAM_ABBREVIATION' in final_df.columns: final_df = final_df.drop(columns=['TEAM_ABBREVIATION'])
+    # ---------------------------------------------------------
+    # 🚑 4. 動態傷病特徵整合 (從傷病表中撈出 MISSING 數據)
+    # ---------------------------------------------------------
+    print("   🚑 正在整合傷兵折損特徵 (MISSING_STATS)...")
+    INJURY_CSV = 'data/nba_advanced_injury_features.csv'
+    if os.path.exists(INJURY_CSV):
+        injury_df = pd.read_csv(INJURY_CSV)
+        injury_df.columns = [c.upper() for c in injury_df.columns]
+        injury_df['GAME_ID'] = injury_df['GAME_ID'].astype(str).str.zfill(10)
+        
+        # 挑出傷病特徵
+        missing_cols = [c for c in injury_df.columns if 'MISSING' in c]
+        if missing_cols:
+            injury_subset = injury_df[['GAME_ID'] + missing_cols]
+            final_df = final_df.merge(injury_subset, on='GAME_ID', how='left')
+    else:
+        print("   ⚠️ 找不到傷兵表，跳過傷兵特徵整合。")
 
-    # 🔥 神級改造：從資料庫直接提取 Target 需要的歷史賠率與淨勝分
-    print("   🔗 正在寫入預測目標 (TW_SPREAD_SCORE & PLUS_MINUS)...")
-    
-    games_df = get_merged_dataframe("games")
-    games_df.columns = [c.upper() for c in games_df.columns]
-    if 'TW_SPREAD_SCORE' in games_df.columns:
-        odds_df = games_df[['GAME_ID', 'TW_SPREAD_SCORE']].drop_duplicates()
-        odds_df['GAME_ID'] = odds_df['GAME_ID'].astype(str).str.zfill(10)
-        final_df = final_df.merge(odds_df, left_on='game_id', right_on='GAME_ID', how='left')
-        if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-    
-    base_df = get_merged_dataframe("boxscore_base")
-    base_df.columns = [c.upper() for c in base_df.columns]
-    if 'PLUS_MINUS' in base_df.columns and 'MATCHUP' in base_df.columns:
-        home_base = base_df[base_df['MATCHUP'].str.contains(' vs. ', na=False)].drop_duplicates('GAME_ID')
-        home_base = home_base[['GAME_ID', 'PLUS_MINUS']]
-        home_base['GAME_ID'] = home_base['GAME_ID'].astype(str).str.zfill(10)
-        final_df = final_df.merge(home_base, left_on='game_id', right_on='GAME_ID', how='left')
-        if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-
+    # 計算 PLUS_MINUS
+    final_df['PLUS_MINUS'] = final_df['HOME_SCORE'] - final_df['AWAY_SCORE']
     final_df = final_df.fillna(0)
-    final_df.rename(columns={'game_id': 'GAME_ID', 'home_team': 'HOME_TEAM', 'away_team': 'AWAY_TEAM'}, inplace=True)
     
+    # 將日期統一名稱
+    final_df.rename(columns={'DATE': 'GAME_DATE', 'SEASON': 'SEASON_YEAR'}, inplace=True)
+
+    # =========================================================
+    # 🎯 5. 終極特徵瘦身：只保留這 24 把模型會用到的特徵！
+    # =========================================================
+    print("   ✂️ 正在進行終極特徵瘦身 (只保留神聯軍需要的欄位)...")
+    
+    ALL_MODELS = [
+        # ---------------- 50G 賽道 ----------------
+        {
+            "name": "50G_Rank1", "track": "50G (Rank 1)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10']
+        },
+        {
+            "name": "50G_Rank2", "track": "50G (Rank 2)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_PAINT_L5', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_MAX_UNANSWERED_RUN_L5', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'AWAY_PACE_S2D', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_TM_TOV_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_SCREEN_ASSISTS_L5', 'HOME_DEF_RATING_S2D', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND']
+        },
+        {
+            "name": "50G_Rank3", "track": "50G (Rank 3)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_EFFICIENCY_TREND', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'AWAY_FTA_RATE_S2D', 'HOME_PCT_PTS_PAINT_L5', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_MAX_UNANSWERED_RUN_L5', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_CLUTCH_TOV_PCT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'AWAY_MAX_UNANSWERED_RUN_L3', 'HOME_TS_PCT_L10', 'AWAY_SCREEN_ASSISTS_L5', 'AWAY_PCT_PTS_3PT_L10', 'HOME_Q1_Q3_GAP_L10']
+        },
+        # ---------------- 70G 賽道 ----------------
+        {
+            "name": "70G_Rank1", "track": "70G (Rank 1)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10']
+        },
+        {
+            "name": "70G_Rank2", "track": "70G (Rank 2)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_EFFICIENCY_TREND', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'AWAY_FTA_RATE_S2D', 'HOME_PCT_PTS_PAINT_L5', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_MAX_UNANSWERED_RUN_L5', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_CLUTCH_TOV_PCT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'AWAY_MAX_UNANSWERED_RUN_L3', 'HOME_TS_PCT_L10', 'AWAY_SCREEN_ASSISTS_L5', 'AWAY_PCT_PTS_3PT_L10', 'HOME_Q1_Q3_GAP_L10']
+        },
+        {
+            "name": "70G_Rank3", "track": "70G (Rank 3)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PIE_L5', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'AWAY_DEF_RATING_L5', 'HOME_AWAY_STREAK', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'HOME_NET_RATING_L10', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_CONTESTED_SHOTS_S2D', 'HOME_LOOSE_BALLS_RECOVERED_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_RUNS_10_0_COUNT_L10', 'HOME_PACE_L5', 'AWAY_DEF_RATING_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_S2D', 'AWAY_RIM_FREQ_L3', 'AWAY_MID_FREQ_L10', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_AWAY_STREAK', 'AWAY_CHARGES_DRAWN_L3']
+        },
+        # ---------------- 100G 賽道 ----------------
+        {
+            "name": "100G_Rank1", "track": "100G (Rank 1)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PIE_L5', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'AWAY_DEF_RATING_L5', 'HOME_PACE_L10', 'HOME_Q1_Q3_GAP_L3', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'HOME_MOREYBALL_INDEX_L5', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_CONTESTED_SHOTS_S2D', 'AWAY_DEF_RATING_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_MOREYBALL_INDEX_L3', 'AWAY_MID_FREQ_L10', 'AWAY_PCT_PTS_3PT_L10']
+        },
+        {
+            "name": "100G_Rank2", "track": "100G (Rank 2)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_AWAY_STREAK', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
+        },
+        {
+            "name": "100G_Rank3", "track": "100G (Rank 3)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PIE_L5', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'AWAY_DEF_RATING_L5', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_CONTESTED_SHOTS_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_CLUTCH_TOV_PCT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10']
+        },
+        # ---------------- 150G 賽道 ----------------
+        {
+            "name": "150G_Rank1", "track": "150G (Rank 1)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_MISSING_PIE_SUM', 'HOME_MISSING_DEF_RATING_SUM']
+        },
+        {
+            "name": "150G_Rank2", "track": "150G (Rank 2)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_MISSING_DEF_RATING_SUM', 'HOME_MISSING_PIE_SUM_OPP']
+        },
+        {
+            "name": "150G_Rank3", "track": "150G (Rank 3)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_MISSING_DEF_RATING_SUM']
+        },
+        # ---------------- 200G 賽道 ----------------
+        {
+            "name": "200G_Rank1", "track": "200G (Rank 1)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10', 'HOME_MISSING_PIE_SUM', 'HOME_MISSING_EFF_SUM']
+        },
+        {
+            "name": "200G_Rank2", "track": "200G (Rank 2)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM']
+        },
+        {
+            "name": "200G_Rank3", "track": "200G (Rank 3)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_EFF_SUM']
+        },
+        # ---------------- 總排名 (Overall) ----------------
+        {
+            "name": "Overall_Rank1", "track": "Overall (Rank 1)",
+            "features": ['AWAY_EFFICIENCY_TREND', 'AWAY_OFF_RATING_L10_STD', 'HOME_PCT_PTS_3PT_L3', 'AWAY_CHARGES_DRAWN_L5', 'AWAY_DEF_RATING_L5', 'HOME_PACE_L10', 'HOME_Q1_Q3_GAP_L5', 'HOME_PCT_PTS_3PT_L10', 'HOME_Q1_Q3_GAP_S2D', 'HOME_CLUTCH_TS_PCT_L3', 'AWAY_MID_FREQ_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_TS_PCT_L10', 'AWAY_IS_B2B', 'HOME_RUNS_10_0_COUNT_S2D', 'AWAY_DEF_RATING_S2D', 'HOME_PCT_AST_FGM_S2D']
+        },
+        {
+            "name": "Overall_Rank2", "track": "Overall (Rank 2)",
+            "features": ['AWAY_CHARGES_DRAWN_L5', 'HOME_PCT_PTS_3PT_L3', 'AWAY_DEF_RATING_L5', 'HOME_Q1_Q3_GAP_L5', 'HOME_PACE_L10', 'HOME_Q1_Q3_GAP_S2D', 'AWAY_FTA_RATE_L10', 'AWAY_MID_FREQ_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_TS_PCT_L10', 'AWAY_IS_B2B', 'HOME_PCT_AST_FGM_S2D']
+        },
+        {
+            "name": "Overall_Rank3", "track": "Overall (Rank 3)",
+            "features": ['AWAY_PACE_L3', 'HOME_Q1_Q3_GAP_L10', 'AWAY_DEF_RATING_L3', 'HOME_PCT_PTS_3PT_L3', 'HOME_PCT_AST_FGM_L5', 'HOME_AWAY_STREAK', 'HOME_Q1_Q3_GAP_L5', 'HOME_PACE_L10', 'HOME_Q1_Q3_GAP_S2D', 'HOME_PACE_S2D', 'HOME_CLUTCH_TS_PCT_L3', 'AWAY_FTA_RATE_L10', 'AWAY_MID_FREQ_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_TS_PCT_L10', 'AWAY_IS_B2B', 'HOME_PCT_AST_FGM_S2D']
+        },
+        # ---------------- 絕對王者瀑布流 (6 Kings) ----------------
+        {
+            "name": "M062", "track": "King (50G 刺客)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'AWAY_DEF_RATING_L5', 'HOME_PCT_AST_FGM_L5', 'HOME_PCT_PTS_3PT_L3', 'HOME_NET_RATING_L10', 'AWAY_CHARGES_DRAWN_L5', 'AWAY_SCREEN_ASSISTS_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_PACE_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_CHARGES_DRAWN_L10', 'HOME_DEF_RATING_S2D', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_PIE_SUM', 'HOME_MISSING_PTS_SUM', 'HOME_MISSING_DEF_RATING_SUM_OPP']
+        },
+        {
+            "name": "M079", "track": "King (70G 狙擊手)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_AWAY_STREAK', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
+        },
+        {
+            "name": "M092", "track": "King (100G 主力)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10']
+        },
+        {
+            "name": "M110", "track": "King (150G 重裝甲)",
+            "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_PAINT_L5', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_MAX_UNANSWERED_RUN_L5', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'AWAY_PACE_S2D', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_TM_TOV_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_SCREEN_ASSISTS_L5', 'HOME_DEF_RATING_S2D', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'HOME_MISSING_PIE_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP']
+        },
+        {
+            "name": "M126", "track": "King (200G 重砲)",
+            "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10', 'HOME_MISSING_EFF_SUM']
+        },
+        {
+            "name": "M014", "track": "King (最終防線)",
+            "features": ['HOME_DEF_RATING_L5', 'HOME_Q1_Q3_GAP_L5', 'HOME_RUN_DEFICIT_RECOVERY_RATE_L5', 'HOME_REST_DAYS', 'HOME_Q1_Q3_GAP_L10', 'HOME_PACE_L10', 'HOME_Q1_Q3_GAP_S2D', 'HOME_CLUTCH_TS_PCT_L3', 'AWAY_MID_FREQ_L10', 'AWAY_IS_B2B', 'AWAY_CHARGES_DRAWN_L5', 'AWAY_Q1_Q3_GAP_L3', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_TS_PCT_L10', 'HOME_PCT_AST_FGM_S2D', 'AWAY_DEF_RATING_L3', 'HOME_PCT_PTS_3PT_L3', 'HOME_RUNS_10_0_COUNT_L3', 'AWAY_EFFICIENCY_TREND']
+        }
+    ]
+
+    all_needed_features = set(['GAME_ID', 'GAME_DATE', 'SEASON_YEAR', 'HOME_TEAM', 'AWAY_TEAM', 'TW_SPREAD_SCORE', 'PLUS_MINUS'])
+    for m in ALL_MODELS:
+        all_needed_features.update(m['features'])
+        
+    cols_to_keep = [c for c in final_df.columns if c in all_needed_features]
+    final_df = final_df[cols_to_keep]
+
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     final_df.to_csv(OUTPUT_CSV, index=False)
-    print(f"\n✅ 終極大表大功告成！已輸出至: {OUTPUT_CSV}")
+    print(f"\n✅ 終極大表大功告成！已精簡並匯出至: {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     print("🚀 啟動 NBA 終極特徵工程引擎 (Feature Store Builder)")
