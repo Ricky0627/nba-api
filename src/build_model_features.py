@@ -66,14 +66,15 @@ def load_and_merge_team_logs():
     return df_master
 
 def engineer_rolling_features(df):
-    print("⏳ 2. 嚴格防洩漏：計算時間切片 (S2D, L10, L5, L3) 與衍生特徵...")
+    print("⏳ 2. 計算時間切片與衍生特徵 (完美還原原始 1.6 億次碰撞之數學邏輯)...")
     
     target_metrics = [
         'PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE',
         'PCT_PTS_3PT', 'PCT_PTS_PAINT', 'PCT_AST_FGM', 'FTA_RATE', 
         'CONTESTED_SHOTS', 'LOOSE_BALLS_RECOVERED', 'CHARGES_DRAWN', 'SCREEN_ASSISTS',
         'MID_FREQ', 'RIM_FREQ', 'MOREYBALL_INDEX', 
-        'CLUTCH_TS_PCT', 'CLUTCH_TOV_PCT', 'RUNS_10_0_COUNT', 'MAX_UNANSWERED_RUN', 'RUN_DEFICIT_RECOVERY_RATE'
+        'CLUTCH_TS_PCT', 'CLUTCH_TOV_PCT', 'RUNS_10_0_COUNT', 'MAX_UNANSWERED_RUN', 'RUN_DEFICIT_RECOVERY_RATE',
+        'LIVE_TOV_PCT' # 補上原始特徵
     ]
     
     df.columns = [c.upper() for c in df.columns]
@@ -82,44 +83,39 @@ def engineer_rolling_features(df):
     if 'Q1_PTS' in df.columns and 'Q3_PTS' in df.columns:
         df['Q1_Q3_GAP'] = df['Q1_PTS'] - df['Q3_PTS']
         metrics.append('Q1_Q3_GAP')
-    
-    if 'MATCHUP' in df.columns:
-        df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
-    else:
-        df['IS_AWAY'] = 0
         
     grouped = df.groupby(['SEASON_YEAR', 'TEAM_ID'])
     
+    # 1️⃣ 計算滾動平均 (L3, L5, L10)
     windows = {'L3': 3, 'L5': 5, 'L10': 10}
     for w_name, w_size in windows.items():
         rolled = grouped[metrics].apply(lambda x: x.shift(1).rolling(w_size, min_periods=1).mean()).reset_index(level=[0,1], drop=True)
         rolled.columns = [f"{c}_{w_name}" for c in rolled.columns]
         df = df.join(rolled)
         
+    # 2️⃣ 計算賽季平均 (S2D)
     s2d = grouped[metrics].apply(lambda x: x.shift(1).expanding(min_periods=1).mean()).reset_index(level=[0,1], drop=True)
     s2d.columns = [f"{c}_S2D" for c in s2d.columns]
     df = df.join(s2d)
     
+    # 3️⃣ 穩定度與趨勢 (🚨修復：OFF_RATING 及 min_periods=3)
     if 'OFF_RATING' in df.columns:
-        df['OFF_RATING_L10_STD'] = grouped['OFF_RATING'].apply(lambda x: x.shift(1).rolling(10, min_periods=2).std()).reset_index(level=[0,1], drop=True)
+        df['OFF_RATING_L10_STD'] = grouped['OFF_RATING'].apply(lambda x: x.shift(1).rolling(10, min_periods=3).std()).reset_index(level=[0,1], drop=True)
     
-    if 'NET_RATING_L5' in df.columns and 'NET_RATING_S2D' in df.columns:
-        df['EFFICIENCY_TREND'] = df['NET_RATING_L5'] - df['NET_RATING_S2D']
+    if 'OFF_RATING_L5' in df.columns and 'OFF_RATING_S2D' in df.columns:
+        df['EFFICIENCY_TREND'] = df['OFF_RATING_L5'] - df['OFF_RATING_S2D']
     
-    df['PREV_GAME_DATE'] = grouped['GAME_DATE'].shift(1)
-    df['REST_DAYS'] = (df['GAME_DATE'] - df['PREV_GAME_DATE']).dt.days - 1
-    df['REST_DAYS'] = df['REST_DAYS'].fillna(3).clip(upper=5) 
-    df['IS_B2B'] = (df['REST_DAYS'] == 0).astype(int)
+    # 4️⃣ 體力與賽程 (🚨修復：完美對齊 .diff().dt.days 的絕對數值)
+    df['REST_DAYS'] = df.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
+    df['IS_B2B'] = (df['REST_DAYS'] == 1).astype(int)
     
-    def calc_away_streak(s):
-        streak = 0
-        res = []
-        for val in s:
-            res.append(streak) 
-            streak = streak + 1 if val == 1 else 0
-        return pd.Series(res, index=s.index)
+    # 5️⃣ 客場連戰次數 (🚨修復：使用包含當前賽事的 cumsum)
+    if 'MATCHUP' in df.columns:
+        df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
+    else:
+        df['IS_AWAY'] = 0
         
-    df['AWAY_STREAK'] = grouped['IS_AWAY'].apply(calc_away_streak).reset_index(level=[0,1], drop=True)
+    df['AWAY_STREAK'] = df.groupby(['TEAM_ID', (df['IS_AWAY'] == 0).cumsum()])['IS_AWAY'].cumsum()
     
     return df
 
@@ -182,7 +178,6 @@ def build_final_master_table(df_features):
 
     final_df = final_df.fillna(0)
     
-    # 統一轉換為大寫名稱，防呆機制
     final_df.rename(columns={'game_id': 'GAME_ID', 'home_team': 'HOME_TEAM', 'away_team': 'AWAY_TEAM'}, inplace=True)
     
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)

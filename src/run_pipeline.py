@@ -4,19 +4,7 @@ import sys
 
 # 定義每日更新的標準執行順序
 PIPELINE_SCRIPTS = [
-    # 階段一：獲取最新基礎數據
-    ("獲取球隊基礎數據", "src/fetch_data.py"),
-    ("獲取球隊擴充數據", "src/fetch_extended_stats.py"),
-    ("獲取球員個人數據", "src/fetch_player_stats.py"),
-    
-    # 階段二：建構主賽程表 (後續腳本高度依賴此表)
-    ("同步主賽程表", "src/init_games_table.py"),
-    
-    # 階段三：補充外部與深度資訊
-    ("獲取傷兵名單", "src/fetch_inactive_players.py"),
-    ("獲取運彩賠率", "src/fetch_odds.py"),
-    ("獲取拼搶數據 (Hustle)", "src/fetch_hustle.py"),           # 👈 新增：Hustle 數據
-    ("獲取逐球轉播 (Play-by-Play)", "src/fetch_pbp.py"),     # 👈 新增：PBP 數據
+        # 👈 新增：PBP 數據
     
     # 階段四：特徵工程 (Feature Engineering)
     ("提煉 PBP 五大進階特徵", "src/build_all_pbp_features_to_db.py"),  # 👈 新增：PBP 特徵提煉
