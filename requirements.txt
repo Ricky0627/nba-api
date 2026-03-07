@@ -7,5 +7,5 @@ pytz
 tqdm
 curl_cffi
 scikit-learn
-xgboost
+xgboost==3.0.1
 joblib
