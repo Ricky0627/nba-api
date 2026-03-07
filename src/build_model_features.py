@@ -86,7 +86,7 @@ def build_master_features():
     # 將 games_raw 欄位轉小寫以完全對齊你的程式碼邏輯
     games_raw.columns = [c.lower() for c in games_raw.columns]
     
-    # 確保 DataFrame 的欄位大小寫符合本地腳本的期望，避免 KeyError
+    # 確保 DataFrame 的欄位大小寫符合期望，避免 KeyError
     expected_cols = COLS_BASE + COLS_ADV + COLS_4F + COLS_HUSTLE + COLS_SCORING + COLS_PBP + ['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'MATCHUP', 'GAME_DATE', 'SEASON_YEAR', 'WL', 'Q1_PTS', 'Q3_PTS']
     col_mapping = {c.upper(): c for c in expected_cols}
 
@@ -118,7 +118,7 @@ def build_master_features():
     df_master = df_master.sort_values(['TEAM_ID', 'GAME_DATE']).reset_index(drop=True)
     df_master = df_master.fillna(0)
 
-    # 2️⃣ 執行滾動平均特徵 (使用字典收集，消除 PerformanceWarning)
+    # 2️⃣ 執行滾動平均特徵
     print("🧪 正在計算滾動平均特徵 (S2D, L10, L5, L3) 🚀加速中...")
     ALL_ROLLING_COLS = list(set(COLS_BASE + COLS_ADV + COLS_4F + COLS_HUSTLE + COLS_SCORING + COLS_PBP + ['Q1_Q3_Gap']))
     
@@ -126,63 +126,50 @@ def build_master_features():
     for col in ALL_ROLLING_COLS:
         if col not in df_master.columns: continue
         group = df_master.groupby(['TEAM_ID', 'SEASON_YEAR'])[col]
-        # 賽季平均
         rolling_features[f'{col}_S2D'] = group.transform(lambda x: x.shift(1).expanding().mean())
-        # 滾動平均
         for n in [10, 5, 3]:
             rolling_features[f'{col}_L{n}'] = group.transform(lambda x: x.shift(1).rolling(n, min_periods=1).mean())
 
-    # 一次性合併所有滾動特徵 (解決碎片化問題)
     df_master = pd.concat([df_master, pd.DataFrame(rolling_features)], axis=1)
 
     # 3️⃣ 趨勢、穩定度、體力與賽程
     print("📈 正在計算戰力趨勢、穩定度與體力賽程...")
     other_feats = {}
     
-    # 穩定度 (標準差)
     other_feats['OFF_RATING_L10_STD'] = df_master.groupby(['TEAM_ID', 'SEASON_YEAR'])['OFF_RATING'].transform(
         lambda x: x.shift(1).rolling(10, min_periods=3).std()
     )
-    # 近期狀態趨勢
     other_feats['Efficiency_Trend'] = df_master['OFF_RATING_L5'] - df_master['OFF_RATING_S2D']
     
-    # 體力與客場之旅
     other_feats['Rest_Days'] = df_master.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
     other_feats['Is_B2B'] = (other_feats['Rest_Days'] == 1).astype(int)
     
     df_master['Is_Away'] = df_master['MATCHUP'].str.contains('@').astype(int)
     other_feats['Away_Streak'] = df_master.groupby(['TEAM_ID', (df_master['Is_Away'] == 0).cumsum()])['Is_Away'].cumsum()
 
-    # 合併其他特徵
     df_master = pd.concat([df_master, pd.DataFrame(other_feats)], axis=1)
 
-    # 4️⃣ ELO Rating 與對戰歷史
+    # 4️⃣ ELO Rating
     print("🏰 正在計算 ELO Rating...")
     elo_df = calculate_elo(games_raw)
     elo_df['GAME_ID'] = elo_df['GAME_ID'].astype(str).str.zfill(10)
 
-    # 5️⃣ 轉換為「主客對戰寬表格式」
+    # 5️⃣ 縫合最終的機器學習特徵寬表
     print("🥞 正在縫合最終的機器學習特徵寬表...")
     final_games = games_raw[['game_id', 'date', 'season', 'home_team', 'away_team', 'home_score', 'away_score', 'tw_spread_score', 'tw_total_score', 'tw_moneyline_home', 'tw_moneyline_away']].copy()
     final_games['game_id'] = final_games['game_id'].astype(str).str.zfill(10)
     
-    # 併入 ELO
     final_games = final_games.merge(elo_df, left_on='game_id', right_on='GAME_ID', how='left').drop(columns=['GAME_ID'])
     
-    # 提取我們剛算出的機器學習特徵
     feature_cols = [c for c in df_master.columns if '_L' in c or '_S2D' in c or 'Trend' in c or 'STD' in c or 'Rest' in c or 'Is_B2B' in c or 'Away_Streak' in c]
-    
-    # ⚠️ 關鍵修復：這裡使用 TEAM_ABBREVIATION 來對齊 games 表裡面的字串 (如 'CLE')
     feats_subset = df_master[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols]
     
-    # 主隊特徵
     final_df = final_games.merge(
         feats_subset, 
         left_on=['game_id', 'home_team'], 
         right_on=['GAME_ID', 'TEAM_ABBREVIATION'], 
-        how='inner' # 用 inner 過濾掉沒有數據的早期比賽
+        how='inner' 
     )
-    # 客隊特徵
     final_df = final_df.merge(
         feats_subset, 
         left_on=['game_id', 'away_team'], 
@@ -191,17 +178,10 @@ def build_master_features():
         suffixes=('_HOME', '_AWAY')
     )
 
-    # 刪除多餘的合併鍵
     cols_to_drop = [c for c in final_df.columns if c.startswith('GAME_ID') or c.startswith('TEAM_ABBREVIATION')]
     final_df = final_df.drop(columns=cols_to_drop)
 
-    # 6️⃣ 匯出
-    print(f"💾 正在匯出至: {OUTPUT_FILE}")
-    final_df.to_csv(OUTPUT_FILE, index=False)
-    
-    print(f"🎉 特徵提煉全部完成！總行數: {len(final_df)}，總特徵維度: {len(final_df.columns)}")
-
-# ==========================================
+    # ==========================================
     # 🔥🔥🔥 補上傷兵與 Rust 特徵 (修復 62% 勝率的關鍵) 🔥🔥🔥
     # ==========================================
     try:
@@ -211,55 +191,56 @@ def build_master_features():
             injury_df = pd.read_csv(injury_csv_path)
             injury_df['game_id'] = injury_df['game_id'].astype(str).str.zfill(10)
             
-            # --- 翻譯蒟蒻：把 injury 產出的 _r20 名稱轉化成模型要的 _SUM 名稱 ---
+            # --- 翻譯蒟蒻 1：轉換欄位名稱 ---
             rename_map = {}
             for col in injury_df.columns:
                 if 'missing_' in col and '_r20' in col:
-                    # 例如把 home_missing_PIE_r20 轉成 HOME_MISSING_PIE_SUM
-                    new_col = col.replace('_r20', '_SUM').upper()
+                    new_col = col.replace('home_', 'HOME_').replace('away_', 'AWAY_').replace('missing_', 'MISSING_').replace('_r20', '_SUM')
                     rename_map[col] = new_col
             injury_df = injury_df.rename(columns=rename_map)
 
-            # --- 模擬那些遺失的基礎指標 (利用現有相近指標做等比例填充) ---
-            # 因為原先的 injury 腳本漏算了 MIN, PTS, DEF_RATING, EFF，
-            # 若不想重寫 injury，可以用高度相關的 NBA_FANTASY_PTS 或 PLUS_MINUS 來模擬缺陣影響度
-            # (這能讓模型至少感受到「有主力缺陣」，勝過補 0)
+            # --- 模擬遺失的基礎指標 ---
             for prefix in ['HOME', 'AWAY']:
-                # 利用 Fantasy PTS 模擬 PTS 與 EFF 的缺陣損失
+                # 利用 Fantasy PTS 模擬 PTS, EFF, MIN 缺席影響
                 if f'{prefix}_MISSING_NBA_FANTASY_PTS_SUM' in injury_df.columns:
                     base_miss = injury_df[f'{prefix}_MISSING_NBA_FANTASY_PTS_SUM']
                     injury_df[f'{prefix}_MISSING_PTS_SUM'] = base_miss * 0.7  
                     injury_df[f'{prefix}_MISSING_EFF_SUM'] = base_miss * 0.8
                     injury_df[f'{prefix}_MISSING_MIN_SUM'] = base_miss * 1.2
-                # 利用 NET_RATING 模擬 DEF_RATING 的缺陣損失
+                # 利用 NET_RATING 模擬 DEF_RATING 缺席影響
                 if f'{prefix}_MISSING_NET_RATING_SUM' in injury_df.columns:
                     injury_df[f'{prefix}_MISSING_DEF_RATING_SUM'] = injury_df[f'{prefix}_MISSING_NET_RATING_SUM'] * -1
 
-            # 移除重複基礎欄位後合併
+            # 移除重複基礎欄位後合併到大表
             cols_to_use = [c for c in injury_df.columns if c not in ['home_team', 'away_team', 'date']]
-            final_games = final_games.merge(injury_df[cols_to_use], on='game_id', how='left')
+            final_df = final_df.merge(injury_df[cols_to_use], on='game_id', how='left')
 
             # --- 翻譯蒟蒻 2：生成對手缺陣指標 (_OPP) ---
-            missing_cols = [c for c in final_games.columns if '_MISSING_' in c]
+            missing_cols = [c for c in final_df.columns if '_MISSING_' in c]
             for col in missing_cols:
                 if col.startswith('HOME_'):
                     opp_col_name = col + '_OPP'
-                    # 主隊的對手缺陣 = 客隊缺陣
                     away_source = col.replace('HOME_', 'AWAY_')
-                    if away_source in final_games.columns:
-                        final_games[opp_col_name] = final_games[away_source]
+                    if away_source in final_df.columns:
+                        final_df[opp_col_name] = final_df[away_source]
                 elif col.startswith('AWAY_'):
                     opp_col_name = col + '_OPP'
-                    # 客隊的對手缺陣 = 主隊缺陣
                     home_source = col.replace('AWAY_', 'HOME_')
-                    if home_source in final_games.columns:
-                        final_games[opp_col_name] = final_games[home_source]
+                    if home_source in final_df.columns:
+                        final_df[opp_col_name] = final_df[home_source]
 
+            print(f"   ✔️ 成功補上並翻譯了 MISSING 傷病特徵陣列！")
         else:
             print(f"⚠️ 警告：找不到傷病檔案 {injury_csv_path}，模型將缺少 MISSING 相關特徵！")
     except Exception as e:
         print(f"❌ 併入傷病特徵時發生錯誤: {e}")
     # ==========================================
+
+    # 6️⃣ 匯出
+    print(f"💾 正在匯出至: {OUTPUT_FILE}")
+    final_df.to_csv(OUTPUT_FILE, index=False)
     
+    print(f"🎉 特徵提煉全部完成！總行數: {len(final_df)}，總特徵維度: {len(final_df.columns)}")
+
 if __name__ == "__main__":
     build_master_features()
