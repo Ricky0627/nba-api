@@ -27,6 +27,13 @@ jobs:
         # 重新計算並生成最乾淨、無錯位的 ml_features_master.csv
         python src/build_model_features.py
 
+    - name: 💾 儲存 GitHub 特徵大表 (供本地對比抓漏)
+      uses: actions/upload-artifact@v4
+      with:
+        name: github-ml-features-master # 下載下來的壓縮檔名稱
+        path: data/ml_features_master.csv # 指定要打包的檔案路徑
+        retention-days: 3 # 設定保存天數 (3天後自動刪除節省空間)
+
     - name: ⚔️ 第二階段：啟動神聯軍大對決 (Backtest Arena)
       run: |
         # 載入大表進行 9 年數據的靜態 vs 滾動回測
