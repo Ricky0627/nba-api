@@ -143,7 +143,7 @@ def load_data_for_backtest():
     
     df = df_master.copy()
     
-    # 🔥 神級補丁：如果特徵大表裡沒有 GAME_DATE，我們直接從資料庫撈出來補上去！
+    # 補丁：如果大表裡沒有 GAME_DATE，從資料庫撈出來補上去
     if 'GAME_DATE' not in df.columns:
         print("   🔍 發現大表缺少 GAME_DATE，自動從 boxscore_base 撈取補齊...")
         df_base = get_merged_dataframe("boxscore_base")
@@ -153,31 +153,38 @@ def load_data_for_backtest():
         df = df.merge(df_dates, on='GAME_ID', how='left')
         
     if 'TW_SPREAD_SCORE' not in df.columns or 'PLUS_MINUS' not in df.columns:
-        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！請確保已執行 build_model_features.py。")
+        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！")
         
     # 濾除無效盤口
     df['TW_SPREAD_SCORE'] = pd.to_numeric(df['TW_SPREAD_SCORE'], errors='coerce')
     df = df[(df['TW_SPREAD_SCORE'] != 0) & (df['TW_SPREAD_SCORE'].notna())]
     df = df.dropna(subset=['PLUS_MINUS'])
     
-    # 🎯 計算讓分過盤 Target
+    # 計算讓分過盤 Target
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
-    
-    # 將日期轉為 datetime 格式，並排序
-    if 'GAME_DATE' not in df.columns or df['GAME_DATE'].isna().all():
-        raise ValueError("❌ 依然無法取得 GAME_DATE，請檢查資料庫！")
     
     # 確保日期格式乾淨 (只取 YYYY-MM-DD)
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'].str[:10]) 
     df = df.dropna(subset=['GAME_DATE']) # 確保沒有空日期
     df = df.sort_values('GAME_DATE').reset_index(drop=True)
     
+    # 🔥🔥🔥 核心修復：在做切割之前，找出所有 24 個模型會用到的特徵，一次性補 0！
+    print("   🔧 正在為歷史資料補齊缺少的動態特徵 (如 MISSING_PIE_SUM 等)...")
+    all_needed_features = set()
+    for m in ALL_MODELS:
+        all_needed_features.update(m['features'])
+        
+    for col in all_needed_features:
+        if col not in df.columns:
+            df[col] = 0
+            
     return df
 
 def run_arena():
     df = load_data_for_backtest()
     
     # 切分歷史賽季(2025前) 與 測試賽季(2025-26)
+    # 因為 df 已經補好 0 了，這時候切割出來的 df 也會有這些特徵，就不會再報 KeyError 啦！
     history_df = df[df['GAME_DATE'] < SEASON_START_DATE].copy()
     test_df = df[df['GAME_DATE'] >= SEASON_START_DATE].copy()
     
@@ -198,10 +205,6 @@ def run_arena():
         m_name = model_config['name']
         features = model_config['features']
         print(f"🚀 [{i+1}/24] 正在回測模型：{m_name} ({model_config['track']}) ...")
-        
-        # 確保特徵存在，補 0 防呆
-        for col in features:
-            if col not in df.columns: df[col] = 0
 
         # ======= 策略 A：靜態模型 (Static) =======
         # 只用 2025 賽季前的資料訓練一次，從頭用到尾
