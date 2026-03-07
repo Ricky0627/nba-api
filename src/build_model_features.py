@@ -68,7 +68,7 @@ def calculate_elo(df_games):
 def build_master_features():
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     
-    print("🔌 正在從 GitHub 資料庫讀取數據...")
+    print("🔌 正在從 GitHub 資料庫讀取數據 (無損對齊本地邏輯)...")
     
     # --- 讀取所有必要表 ---
     base = get_merged_dataframe("boxscore_base")
@@ -81,14 +81,19 @@ def build_master_features():
     tov = get_merged_dataframe("team_features_turnover")
     momentum = get_merged_dataframe("team_features_momentum")
     quarterly = get_merged_dataframe("team_features_quarterly")
-    
     games_raw = get_merged_dataframe("games")
+    
     # 將 games_raw 欄位轉小寫以完全對齊你的程式碼邏輯
     games_raw.columns = [c.lower() for c in games_raw.columns]
     
+    # 確保 DataFrame 的欄位大小寫符合本地腳本的期望，避免 KeyError
+    expected_cols = COLS_BASE + COLS_ADV + COLS_4F + COLS_HUSTLE + COLS_SCORING + COLS_PBP + ['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'MATCHUP', 'GAME_DATE', 'SEASON_YEAR', 'WL', 'Q1_PTS', 'Q3_PTS']
+    col_mapping = {c.upper(): c for c in expected_cols}
+
     # 確保 ID 格式統一
     for df in [base, adv, ff, hustle, scoring, clutch, shot, tov, momentum, quarterly]:
         if not df.empty:
+            df.columns = [col_mapping.get(c.upper(), c) for c in df.columns]
             if 'GAME_ID' in df.columns:
                 df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
             if 'TEAM_ID' in df.columns:

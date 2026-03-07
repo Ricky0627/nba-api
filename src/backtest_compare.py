@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # ⚙️ 設定區
 # ==========================================
-MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
+MASTER_FEATURES_CSV = 'data/ml_features_master.csv' 
 
 TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
 TEST_SEASON = ['2025-26']
@@ -52,7 +52,7 @@ ALL_MODELS = [
     },
     {
         "name": "100G_Rank2", "track": "100G (Rank 2)",
-        "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'HOME_AWAY_STREAK', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
+        "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_L3', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'HOME_IS_B2B', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'HOME_TM_TOV_PCT_S2D', 'AWAY_STREAK_HOME', 'AWAY_CLUTCH_TOV_PCT_L3', 'HOME_PACE_L10', 'HOME_MISSING_MIN_SUM', 'HOME_MISSING_USG_PCT_SUM_OPP', 'HOME_MISSING_PTS_SUM_OPP']
     },
     {
         "name": "100G_Rank3", "track": "100G (Rank 3)",
@@ -126,7 +126,7 @@ ALL_MODELS = [
 
 def run_github_backtest():
     print("="*85)
-    print("🚀 啟動 GitHub 專用：讓分盤靜態回測引擎 (自動欄位轉化版)")
+    print("🚀 啟動 GitHub 專用：讓分盤靜態回測引擎 (完美對齊本地參數版)")
     print("="*85)
 
     try:
@@ -211,7 +211,7 @@ def run_github_backtest():
         X_train = train_df[features].fillna(0)
         X_test = test_df[features].fillna(0)
 
-        # 嚴格鎖定窮舉時防過擬合的 XGBoost 參數 (50棵樹, 深度3)
+        # 嚴格鎖定窮舉時防過擬合的 XGBoost 參數 (50棵樹, 深度3, hist演算法)
         model = XGBClassifier(
             n_estimators=50, 
             learning_rate=0.05, 
