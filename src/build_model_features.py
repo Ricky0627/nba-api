@@ -109,15 +109,17 @@ def engineer_rolling_features(df):
     other_feats['AWAY_STREAK'] = df.groupby(['TEAM_ID', (df['IS_AWAY'] == 0).cumsum()])['IS_AWAY'].cumsum()
 
     df = pd.concat([df, pd.DataFrame(other_feats)], axis=1)
+    
+    # 確保所有特徵名稱都是大寫
+    df.columns = [c.upper() for c in df.columns]
     return df
 
 def build_final_master_table(df_features):
-    print("🥞 3. 正在縫合最終的機器學習特徵寬表 (還原原始 Suffix 暴力對接法)...")
+    print("🥞 3. 正在縫合最終的機器學習特徵寬表 (全大寫對齊)...")
     
     games_raw = get_merged_dataframe("games")
     games_raw.columns = [c.upper() for c in games_raw.columns]
     
-    # 使用 games_raw 作為主幹
     final_games = games_raw[['GAME_ID', 'DATE', 'SEASON', 'HOME_TEAM', 'AWAY_TEAM', 'HOME_SCORE', 'AWAY_SCORE', 'TW_SPREAD_SCORE']].copy()
     final_games['GAME_ID'] = final_games['GAME_ID'].astype(str).str.zfill(10)
     
@@ -127,7 +129,6 @@ def build_final_master_table(df_features):
     
     feats_subset = df_features[['GAME_ID', 'TEAM_ABBREVIATION'] + feature_cols]
     
-    # 🚨 完美還原：讓 Pandas 自動加上 _HOME 與 _AWAY 的後綴
     final_df = final_games.merge(
         feats_subset, 
         left_on=['GAME_ID', 'HOME_TEAM'], 
@@ -161,10 +162,10 @@ def build_final_master_table(df_features):
     final_df = final_df.fillna(0)
     
     final_df.rename(columns={'DATE': 'GAME_DATE', 'SEASON': 'SEASON_YEAR'}, inplace=True)
+    
+    # 確保輸出表頭全大寫
+    final_df.columns = [c.upper() for c in final_df.columns]
 
-    # =========================================================
-    # 🎯 5. 終極特徵瘦身：100% 使用你提供的特徵字串清單
-    # =========================================================
     print("   ✂️ 正在進行終極特徵瘦身 (只保留神聯軍需要的欄位)...")
     
     ALL_MODELS = [
