@@ -60,13 +60,13 @@ ALL_MODELS = [
 # 🚨 防過擬合設定 (50棵樹, 深度3)
 def get_xgb_model():
     return XGBClassifier(
-        n_estimators=50,
-        max_depth=3,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        eval_metric='logloss',
-        verbosity=0
+            n_estimators=50,       # 必須是 50
+            learning_rate=0.05,
+            max_depth=3,           # 必須是 3
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            eval_metric='logloss'
         # 移除 learning_rate，讓模型大膽推測機率！
     )
 
