@@ -22,6 +22,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: 🏗️ 第一階段：構建終極特徵大表 (Feature Engineering)
+      run: |
+        # 重新計算並生成最乾淨、無錯位的 ml_features_master.csv
+        python src/build_model_features.py
+
     - name: ⚔️ 第二階段：啟動神聯軍大對決 (Backtest Arena)
       run: |
         # 載入大表進行 9 年數據的靜態 vs 滾動回測
