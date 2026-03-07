@@ -9,16 +9,19 @@ from prepare_data import get_merged_dataframe
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ 設定區：9 年大數據基底 + 53% 出手門檻
+# ⚙️ 設定區
 # ==========================================
 MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
 
-# 🏆 核心修正：指定訓練賽季與測試賽季
+# 訓練與測試賽季
 TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
 TEST_SEASON = ['2025-26']
 
+# 🎯 冷血門檻 (我們維持 55% 來看高信心場次的表現)
+SNIPER_THRESHOLD = 0.55  
+
 # ==========================================
-# 🏆 24 神聯軍全特徵定義 (純淨版)
+# 🏆 24 神聯軍全特徵定義 (特徵 100% 對齊)
 # ==========================================
 ALL_MODELS = [
     # ---------------- 50G 賽道 ----------------
@@ -126,11 +129,12 @@ ALL_MODELS = [
     }
 ]
 
+# 🚨 修正一：把 XGBoost 參數完全改回你窮舉時的防過擬合設定 (50棵樹, 深度3)
 def get_xgb_model():
     return XGBClassifier(
-        n_estimators=120,
+        n_estimators=50,
         learning_rate=0.05,
-        max_depth=4,
+        max_depth=3,
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=42,
@@ -146,35 +150,23 @@ def load_data_for_backtest():
     
     df = df_master.copy()
     
-    # 🔥 補丁：確保我們有 GAME_DATE 和 SEASON_YEAR 來做精準切分
     if 'GAME_DATE' not in df.columns or 'SEASON_YEAR' not in df.columns:
-        print("   🔍 發現大表缺少 GAME_DATE 或 SEASON_YEAR，自動從 boxscore_base 撈取補齊...")
         df_base = get_merged_dataframe("boxscore_base")
         df_base.columns = [c.upper() for c in df_base.columns]
         df_dates = df_base[['GAME_ID', 'GAME_DATE', 'SEASON_YEAR']].drop_duplicates()
         df_dates['GAME_ID'] = df_dates['GAME_ID'].astype(str).str.zfill(10)
-        
         if 'GAME_DATE' in df.columns: df = df.drop(columns=['GAME_DATE'])
         if 'SEASON_YEAR' in df.columns: df = df.drop(columns=['SEASON_YEAR'])
-            
         df = df.merge(df_dates, on='GAME_ID', how='left')
         
-    if 'TW_SPREAD_SCORE' not in df.columns or 'PLUS_MINUS' not in df.columns:
-        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！請確保已執行 build_model_features.py。")
-        
-    # 濾除無效盤口
     df['TW_SPREAD_SCORE'] = pd.to_numeric(df['TW_SPREAD_SCORE'], errors='coerce')
     df = df[(df['TW_SPREAD_SCORE'] != 0) & (df['TW_SPREAD_SCORE'].notna())]
     df = df.dropna(subset=['PLUS_MINUS'])
     
-    # 計算讓分過盤 Target
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
-    
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'].str[:10]) 
     df = df.dropna(subset=['GAME_DATE', 'SEASON_YEAR'])
     
-    # 🔥 核心修復：在做切割之前，一次性補 0！
-    print("   🔧 正在為歷史資料補齊缺少的動態特徵 (如 MISSING_PIE_SUM 等)...")
     all_needed_features = set()
     for m in ALL_MODELS:
         all_needed_features.update(m['features'])
@@ -182,27 +174,22 @@ def load_data_for_backtest():
         if col not in df.columns:
             df[col] = 0
             
-    # 只保留指定的訓練和測試賽季
     df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS + TEST_SEASON)]
     df = df.sort_values('GAME_DATE').reset_index(drop=True)
-            
     return df
 
 def run_arena():
     df = load_data_for_backtest()
     
-    # 利用 SEASON_YEAR 精準切分
     history_df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS)].copy()
     test_df = df[df['SEASON_YEAR'].isin(TEST_SEASON)].copy()
     
-    if history_df.empty or test_df.empty:
-        print("❌ 錯誤：資料量不足以進行回測，請確認資料庫包含你設定的賽季。")
-        return
+    if history_df.empty or test_df.empty: return
         
     test_dates = sorted(test_df['GAME_DATE'].unique())
-    print(f"\n⚔️  24 神聯軍 9年大數據回測競技場正式啟動！(含 53% 信心過濾)")
-    print(f"📊 歷史訓練基底: {len(history_df)} 場賽事 ({', '.join(TRAIN_SEASONS)})")
-    print(f"📅 本季測試天數: {len(test_dates)} 天 (共 {len(test_df)} 場賽事 | 賽季: {TEST_SEASON[0]})\n")
+    print(f"\n⚔️  24 神聯軍：防過擬合參數對齊版 (過濾 >= {SNIPER_THRESHOLD*100}% 絕對信心)")
+    print(f"📊 訓練基底: {len(history_df)} 場賽事 ({', '.join(TRAIN_SEASONS)})")
+    print(f"📅 本季測試: {len(test_df)} 場賽事\n")
     print("="*100)
 
     results = []
@@ -211,22 +198,23 @@ def run_arena():
         m_name = model_config['name']
         features = model_config['features']
         
-        # 🎯 信心指數過濾器：Overall 保持 >=0.5，其他 >=0.53
-        threshold = 0.50 if "Overall" in m_name else 0.53
+        # 🎯 Overall 賽道不設防 (0.5)，其他賽道嚴格執行 SNIPER_THRESHOLD
+        threshold = 0.50 if "Overall" in m_name else SNIPER_THRESHOLD
         
-        print(f"🚀 [{i+1}/24] 正在回測模型：{m_name} ({model_config['track']}) ...")
-
-        # ======= 策略 A：靜態模型 (Static) =======
         static_model = get_xgb_model()
-        static_model.fit(history_df[features], history_df['HOME_WIN'])
+        
+        # 🚨 修正二：強制對訓練集特徵使用 fillna(0)
+        X_train_static = history_df[features].fillna(0)
+        static_model.fit(X_train_static, history_df['HOME_WIN'])
         
         static_correct, static_bets = 0, 0
         rolling_correct, rolling_bets = 0, 0
 
-        # 逐日模擬
         for current_date in test_dates:
             day_test = df[df['GAME_DATE'] == current_date]
-            X_test = day_test[features]
+            
+            # 🚨 修正二：強制對測試集特徵使用 fillna(0)
+            X_test = day_test[features].fillna(0)
             y_test = day_test['HOME_WIN'].values
             
             # --- 靜態預測 ---
@@ -239,10 +227,12 @@ def run_arena():
             static_bets += np.sum(s_bet_mask)
             
             # --- 滾動訓練與預測 ---
-            # 這裡的 df 已經濾除掉我們不要的舊賽季了，所以直接取 < current_date 是非常安全的
             rolling_train_df = df[df['GAME_DATE'] < current_date]
             rolling_model = get_xgb_model()
-            rolling_model.fit(rolling_train_df[features], rolling_train_df['HOME_WIN'])
+            
+            # 🚨 修正二：強制對滾動訓練集特徵使用 fillna(0)
+            X_train_rolling = rolling_train_df[features].fillna(0)
+            rolling_model.fit(X_train_rolling, rolling_train_df['HOME_WIN'])
             
             r_probs = rolling_model.predict_proba(X_test)
             r_max_probs = np.max(r_probs, axis=1)
@@ -270,15 +260,11 @@ def run_arena():
             "Gap": round(gap * 100, 2)
         })
 
-    # ==========================================
-    # 🏆 顯示終極戰果排名表
-    # ==========================================
     print("\n" + "="*100)
-    print(f"{'🏅 24 神聯軍：靜態 VS 滾動 最終戰果表 (已過濾 53% 信心指數)':^90}")
+    print(f"{'🏅 24 神聯軍：參數對齊 最終戰果表':^90}")
     print("="*100)
     
     res_df = pd.DataFrame(results)
-    
     print(f"{'模型名稱':<15} | {'賽道':<18} | {'靜態勝率 (下注數)':<16} | {'滾動勝率 (下注數)':<16} | {'最終贏家':<4}")
     print("-" * 100)
     
