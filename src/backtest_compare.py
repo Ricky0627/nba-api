@@ -9,10 +9,13 @@ from prepare_data import get_merged_dataframe
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ 設定區
+# ⚙️ 設定區：9 年大數據基底 + 53% 出手門檻
 # ==========================================
 MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
-SEASON_START_DATE = '2025-10-15' # 2025-26 賽季開打大約日期
+
+# 🏆 核心修正：指定訓練賽季與測試賽季
+TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
+TEST_SEASON = ['2025-26']
 
 # ==========================================
 # 🏆 24 神聯軍全特徵定義 (純淨版)
@@ -143,17 +146,21 @@ def load_data_for_backtest():
     
     df = df_master.copy()
     
-    # 補丁：如果大表裡沒有 GAME_DATE，從資料庫撈出來補上去
-    if 'GAME_DATE' not in df.columns:
-        print("   🔍 發現大表缺少 GAME_DATE，自動從 boxscore_base 撈取補齊...")
+    # 🔥 補丁：確保我們有 GAME_DATE 和 SEASON_YEAR 來做精準切分
+    if 'GAME_DATE' not in df.columns or 'SEASON_YEAR' not in df.columns:
+        print("   🔍 發現大表缺少 GAME_DATE 或 SEASON_YEAR，自動從 boxscore_base 撈取補齊...")
         df_base = get_merged_dataframe("boxscore_base")
         df_base.columns = [c.upper() for c in df_base.columns]
-        df_dates = df_base[['GAME_ID', 'GAME_DATE']].drop_duplicates()
+        df_dates = df_base[['GAME_ID', 'GAME_DATE', 'SEASON_YEAR']].drop_duplicates()
         df_dates['GAME_ID'] = df_dates['GAME_ID'].astype(str).str.zfill(10)
+        
+        if 'GAME_DATE' in df.columns: df = df.drop(columns=['GAME_DATE'])
+        if 'SEASON_YEAR' in df.columns: df = df.drop(columns=['SEASON_YEAR'])
+            
         df = df.merge(df_dates, on='GAME_ID', how='left')
         
     if 'TW_SPREAD_SCORE' not in df.columns or 'PLUS_MINUS' not in df.columns:
-        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！")
+        raise ValueError("❌ 特徵大表缺少 TW_SPREAD_SCORE 或 PLUS_MINUS，無法回測！請確保已執行 build_model_features.py。")
         
     # 濾除無效盤口
     df['TW_SPREAD_SCORE'] = pd.to_numeric(df['TW_SPREAD_SCORE'], errors='coerce')
@@ -163,97 +170,101 @@ def load_data_for_backtest():
     # 計算讓分過盤 Target
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
     
-    # 確保日期格式乾淨 (只取 YYYY-MM-DD)
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'].str[:10]) 
-    df = df.dropna(subset=['GAME_DATE']) # 確保沒有空日期
-    df = df.sort_values('GAME_DATE').reset_index(drop=True)
+    df = df.dropna(subset=['GAME_DATE', 'SEASON_YEAR'])
     
-    # 🔥🔥🔥 核心修復：在做切割之前，找出所有 24 個模型會用到的特徵，一次性補 0！
+    # 🔥 核心修復：在做切割之前，一次性補 0！
     print("   🔧 正在為歷史資料補齊缺少的動態特徵 (如 MISSING_PIE_SUM 等)...")
     all_needed_features = set()
     for m in ALL_MODELS:
         all_needed_features.update(m['features'])
-        
     for col in all_needed_features:
         if col not in df.columns:
             df[col] = 0
+            
+    # 只保留指定的訓練和測試賽季
+    df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS + TEST_SEASON)]
+    df = df.sort_values('GAME_DATE').reset_index(drop=True)
             
     return df
 
 def run_arena():
     df = load_data_for_backtest()
     
-    # 切分歷史賽季(2025前) 與 測試賽季(2025-26)
-    # 因為 df 已經補好 0 了，這時候切割出來的 df 也會有這些特徵，就不會再報 KeyError 啦！
-    history_df = df[df['GAME_DATE'] < SEASON_START_DATE].copy()
-    test_df = df[df['GAME_DATE'] >= SEASON_START_DATE].copy()
+    # 利用 SEASON_YEAR 精準切分
+    history_df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS)].copy()
+    test_df = df[df['SEASON_YEAR'].isin(TEST_SEASON)].copy()
     
     if history_df.empty or test_df.empty:
-        print("❌ 錯誤：資料量不足以進行回測，請確認資料庫包含 2025 以前與本賽季的資料。")
+        print("❌ 錯誤：資料量不足以進行回測，請確認資料庫包含你設定的賽季。")
         return
         
     test_dates = sorted(test_df['GAME_DATE'].unique())
-    print(f"\n⚔️  24 神聯軍 回測競技場正式啟動！")
-    print(f"📊 歷史訓練基底: {len(history_df)} 場賽事")
-    print(f"📅 本季測試天數: {len(test_dates)} 天 (共 {len(test_df)} 場賽事)\n")
-    print("="*80)
+    print(f"\n⚔️  24 神聯軍 9年大數據回測競技場正式啟動！(含 53% 信心過濾)")
+    print(f"📊 歷史訓練基底: {len(history_df)} 場賽事 ({', '.join(TRAIN_SEASONS)})")
+    print(f"📅 本季測試天數: {len(test_dates)} 天 (共 {len(test_df)} 場賽事 | 賽季: {TEST_SEASON[0]})\n")
+    print("="*100)
 
     results = []
 
-    # 一次跑 24 個模型
     for i, model_config in enumerate(ALL_MODELS):
         m_name = model_config['name']
         features = model_config['features']
+        
+        # 🎯 信心指數過濾器：Overall 保持 >=0.5，其他 >=0.53
+        threshold = 0.50 if "Overall" in m_name else 0.53
+        
         print(f"🚀 [{i+1}/24] 正在回測模型：{m_name} ({model_config['track']}) ...")
 
         # ======= 策略 A：靜態模型 (Static) =======
-        # 只用 2025 賽季前的資料訓練一次，從頭用到尾
         static_model = get_xgb_model()
         static_model.fit(history_df[features], history_df['HOME_WIN'])
         
-        # 紀錄變數
-        static_correct = 0
-        rolling_correct = 0
-        total_games = 0
+        static_correct, static_bets = 0, 0
+        rolling_correct, rolling_bets = 0, 0
 
-        # 開始逐日模擬
+        # 逐日模擬
         for current_date in test_dates:
             day_test = df[df['GAME_DATE'] == current_date]
             X_test = day_test[features]
             y_test = day_test['HOME_WIN'].values
             
-            # ======= 策略 B：滾動訓練 (Rolling) =======
-            # 每天把直到昨天的最新資料餵進去重新訓練
+            # --- 靜態預測 ---
+            s_probs = static_model.predict_proba(X_test)
+            s_max_probs = np.max(s_probs, axis=1)
+            s_preds = np.argmax(s_probs, axis=1)
+            
+            s_bet_mask = s_max_probs >= threshold
+            static_correct += np.sum((s_preds == y_test)[s_bet_mask])
+            static_bets += np.sum(s_bet_mask)
+            
+            # --- 滾動訓練與預測 ---
+            # 這裡的 df 已經濾除掉我們不要的舊賽季了，所以直接取 < current_date 是非常安全的
             rolling_train_df = df[df['GAME_DATE'] < current_date]
             rolling_model = get_xgb_model()
             rolling_model.fit(rolling_train_df[features], rolling_train_df['HOME_WIN'])
             
-            # 預測當天賽事
-            static_preds = (static_model.predict_proba(X_test)[:, 1] >= 0.5).astype(int)
-            rolling_preds = (rolling_model.predict_proba(X_test)[:, 1] >= 0.5).astype(int)
+            r_probs = rolling_model.predict_proba(X_test)
+            r_max_probs = np.max(r_probs, axis=1)
+            r_preds = np.argmax(r_probs, axis=1)
             
-            static_correct += np.sum(static_preds == y_test)
-            rolling_correct += np.sum(rolling_preds == y_test)
-            total_games += len(y_test)
+            r_bet_mask = r_max_probs >= threshold
+            rolling_correct += np.sum((r_preds == y_test)[r_bet_mask])
+            rolling_bets += np.sum(r_bet_mask)
 
-        static_acc = static_correct / total_games if total_games > 0 else 0
-        rolling_acc = rolling_correct / total_games if total_games > 0 else 0
+        static_acc = static_correct / static_bets if static_bets > 0 else 0
+        rolling_acc = rolling_correct / rolling_bets if rolling_bets > 0 else 0
         
-        # 決定勝負
-        if rolling_acc > static_acc:
-            winner = "滾動"
-            gap = rolling_acc - static_acc
-        elif static_acc > rolling_acc:
-            winner = "靜態"
-            gap = static_acc - rolling_acc
-        else:
-            winner = "平手"
-            gap = 0
+        if rolling_acc > static_acc: winner, gap = "滾動", rolling_acc - static_acc
+        elif static_acc > rolling_acc: winner, gap = "靜態", static_acc - rolling_acc
+        else: winner, gap = "平手", 0
             
         results.append({
             "Model": m_name,
             "Track": model_config['track'],
+            "Static_Bets": static_bets,
             "Static_Acc": round(static_acc * 100, 2),
+            "Rolling_Bets": rolling_bets,
             "Rolling_Acc": round(rolling_acc * 100, 2),
             "Winner": winner,
             "Gap": round(gap * 100, 2)
@@ -262,29 +273,25 @@ def run_arena():
     # ==========================================
     # 🏆 顯示終極戰果排名表
     # ==========================================
-    print("\n" + "="*80)
-    print(f"{'🏅 24 神聯軍：靜態 (不變) VS 滾動 (適應) 最終戰果表':^75}")
-    print("="*80)
+    print("\n" + "="*100)
+    print(f"{'🏅 24 神聯軍：靜態 VS 滾動 最終戰果表 (已過濾 53% 信心指數)':^90}")
+    print("="*100)
     
     res_df = pd.DataFrame(results)
     
-    # 計算整體哪一種策略贏的次數多
-    static_wins = len(res_df[res_df['Winner'] == '靜態'])
-    rolling_wins = len(res_df[res_df['Winner'] == '滾動'])
-    ties = len(res_df[res_df['Winner'] == '平手'])
-    
-    print(f"【總結算】靜態勝出: {static_wins} 款 | 滾動勝出: {rolling_wins} 款 | 平手: {ties} 款\n")
-    
-    # 格式化輸出表格
-    print(f"{'模型名稱 (Model)':<15} | {'賽道 (Track)':<18} | {'靜態勝率':<8} | {'滾動勝率':<8} | {'最終贏家':<4} (勝差)")
-    print("-" * 80)
+    print(f"{'模型名稱':<15} | {'賽道':<18} | {'靜態勝率 (下注數)':<16} | {'滾動勝率 (下注數)':<16} | {'最終贏家':<4}")
+    print("-" * 100)
     
     for _, row in res_df.iterrows():
         winner_str = f"🏆 {row['Winner']}" if row['Gap'] > 0 else "🤝 平手"
         gap_str = f"(+{row['Gap']}%)" if row['Gap'] > 0 else ""
-        print(f"{row['Model']:<17} | {row['Track']:<20} | {row['Static_Acc']:>6}% | {row['Rolling_Acc']:>6}% | {winner_str} {gap_str}")
         
-    print("="*80)
+        static_str = f"{row['Static_Acc']:>5}% ({row['Static_Bets']}場)"
+        rolling_str = f"{row['Rolling_Acc']:>5}% ({row['Rolling_Bets']}場)"
+        
+        print(f"{row['Model']:<17} | {row['Track']:<20} | {static_str:<18} | {rolling_str:<18} | {winner_str} {gap_str}")
+        
+    print("="*100)
 
 if __name__ == "__main__":
     run_arena()
