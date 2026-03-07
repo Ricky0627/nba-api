@@ -66,7 +66,7 @@ def load_and_merge_team_logs():
     return df_master
 
 def engineer_rolling_features(df):
-    print("⏳ 2. 計算時間切片與衍生特徵 (完美還原原始 1.6 億次碰撞之數學邏輯)...")
+    print("⏳ 2. 嚴格防洩漏：計算時間切片與衍生特徵 (🚨已還原 Transform 確保絕對對齊)...")
     
     target_metrics = [
         'PACE', 'DEF_RATING', 'NET_RATING', 'OFF_RATING', 'TS_PCT', 'EFG_PCT', 'TM_TOV_PCT', 'OREB_PCT', 'PIE',
@@ -74,7 +74,7 @@ def engineer_rolling_features(df):
         'CONTESTED_SHOTS', 'LOOSE_BALLS_RECOVERED', 'CHARGES_DRAWN', 'SCREEN_ASSISTS',
         'MID_FREQ', 'RIM_FREQ', 'MOREYBALL_INDEX', 
         'CLUTCH_TS_PCT', 'CLUTCH_TOV_PCT', 'RUNS_10_0_COUNT', 'MAX_UNANSWERED_RUN', 'RUN_DEFICIT_RECOVERY_RATE',
-        'LIVE_TOV_PCT' # 補上原始特徵
+        'LIVE_TOV_PCT'
     ]
     
     df.columns = [c.upper() for c in df.columns]
@@ -84,32 +84,34 @@ def engineer_rolling_features(df):
         df['Q1_Q3_GAP'] = df['Q1_PTS'] - df['Q3_PTS']
         metrics.append('Q1_Q3_GAP')
         
-    grouped = df.groupby(['SEASON_YEAR', 'TEAM_ID'])
+    # ⚠️ 最關鍵的一步：確保資料完全依據球隊與時間排序，後續 transform 才能完美對齊
+    df = df.sort_values(['TEAM_ID', 'GAME_DATE']).reset_index(drop=True)
     
-    # 1️⃣ 計算滾動平均 (L3, L5, L10)
-    windows = {'L3': 3, 'L5': 5, 'L10': 10}
-    for w_name, w_size in windows.items():
-        rolled = grouped[metrics].apply(lambda x: x.shift(1).rolling(w_size, min_periods=1).mean()).reset_index(level=[0,1], drop=True)
-        rolled.columns = [f"{c}_{w_name}" for c in rolled.columns]
-        df = df.join(rolled)
-        
-    # 2️⃣ 計算賽季平均 (S2D)
-    s2d = grouped[metrics].apply(lambda x: x.shift(1).expanding(min_periods=1).mean()).reset_index(level=[0,1], drop=True)
-    s2d.columns = [f"{c}_S2D" for c in s2d.columns]
-    df = df.join(s2d)
+    rolling_features = {}
     
-    # 3️⃣ 穩定度與趨勢 (🚨修復：OFF_RATING 及 min_periods=3)
+    # 🚨 全面改回原始腳本的 .transform()，徹底消滅 Index 錯位 Bug！
+    for col in metrics:
+        group = df.groupby(['TEAM_ID', 'SEASON_YEAR'])[col]
+        rolling_features[f'{col}_S2D'] = group.transform(lambda x: x.shift(1).expanding(min_periods=1).mean())
+        for n in [3, 5, 10]:
+            rolling_features[f'{col}_L{n}'] = group.transform(lambda x: x.shift(1).rolling(n, min_periods=1).mean())
+            
+    df = pd.concat([df, pd.DataFrame(rolling_features)], axis=1)
+    
+    # 🚨 修正 STD 啟動門檻與對齊
     if 'OFF_RATING' in df.columns:
-        df['OFF_RATING_L10_STD'] = grouped['OFF_RATING'].apply(lambda x: x.shift(1).rolling(10, min_periods=3).std()).reset_index(level=[0,1], drop=True)
+        df['OFF_RATING_L10_STD'] = df.groupby(['TEAM_ID', 'SEASON_YEAR'])['OFF_RATING'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=3).std()
+        )
     
+    # 🚨 修正 Trend 邏輯 (改回進攻效率)
     if 'OFF_RATING_L5' in df.columns and 'OFF_RATING_S2D' in df.columns:
         df['EFFICIENCY_TREND'] = df['OFF_RATING_L5'] - df['OFF_RATING_S2D']
     
-    # 4️⃣ 體力與賽程 (🚨修復：完美對齊 .diff().dt.days 的絕對數值)
+    # 體力與賽程 (完美對齊)
     df['REST_DAYS'] = df.groupby('TEAM_ID')['GAME_DATE'].diff().dt.days
     df['IS_B2B'] = (df['REST_DAYS'] == 1).astype(int)
     
-    # 5️⃣ 客場連戰次數 (🚨修復：使用包含當前賽事的 cumsum)
     if 'MATCHUP' in df.columns:
         df['IS_AWAY'] = df['MATCHUP'].str.contains('@').astype(int)
     else:
@@ -155,7 +157,6 @@ def build_final_master_table(df_features):
     # 🔥 神級改造：從資料庫直接提取 Target 需要的歷史賠率與淨勝分
     print("   🔗 正在寫入預測目標 (TW_SPREAD_SCORE & PLUS_MINUS)...")
     
-    # 1. 抓取歷史賠率 (games表)
     games_df = get_merged_dataframe("games")
     games_df.columns = [c.upper() for c in games_df.columns]
     if 'TW_SPREAD_SCORE' in games_df.columns:
@@ -163,9 +164,7 @@ def build_final_master_table(df_features):
         odds_df['GAME_ID'] = odds_df['GAME_ID'].astype(str).str.zfill(10)
         final_df = final_df.merge(odds_df, left_on='game_id', right_on='GAME_ID', how='left')
         if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-        print("      ✅ 成功併入 TW_SPREAD_SCORE (台灣運彩讓分)！")
     
-    # 2. 抓取主隊淨勝分 (boxscore_base表)
     base_df = get_merged_dataframe("boxscore_base")
     base_df.columns = [c.upper() for c in base_df.columns]
     if 'PLUS_MINUS' in base_df.columns and 'MATCHUP' in base_df.columns:
@@ -174,10 +173,8 @@ def build_final_master_table(df_features):
         home_base['GAME_ID'] = home_base['GAME_ID'].astype(str).str.zfill(10)
         final_df = final_df.merge(home_base, left_on='game_id', right_on='GAME_ID', how='left')
         if 'GAME_ID' in final_df.columns: final_df = final_df.drop(columns=['GAME_ID'])
-        print("      ✅ 成功併入 PLUS_MINUS (主隊淨勝分)！")
 
     final_df = final_df.fillna(0)
-    
     final_df.rename(columns={'game_id': 'GAME_ID', 'home_team': 'HOME_TEAM', 'away_team': 'AWAY_TEAM'}, inplace=True)
     
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
