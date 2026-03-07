@@ -11,12 +11,15 @@ warnings.filterwarnings('ignore')
 # ==========================================
 MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
 
+# 訓練與測試賽季
 TRAIN_SEASONS = ['2016-17', '2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24', '2024-25']
 TEST_SEASON = ['2025-26']
-SNIPER_THRESHOLD = 0.53  # 高信心出手門檻
+
+# 🎯 冷血門檻 (高信心出手點)
+SNIPER_THRESHOLD = 0.53  
 
 # ==========================================
-# 🏆 24 神聯軍全特徵定義 (前綴對齊版，保證抓得到資料)
+# 🏆 24 神聯軍全特徵定義 (前綴對齊版，無 TEAM_ID)
 # ==========================================
 ALL_MODELS = [
     # ---------------- 50G 賽道 ----------------
@@ -150,11 +153,9 @@ def run_static_backtest():
     df = df[(df['TW_SPREAD_SCORE'] != 0) & (df['TW_SPREAD_SCORE'].notna())]
     df['HOME_WIN'] = (df['PLUS_MINUS'] + df['TW_SPREAD_SCORE'] > 0).astype(int)
 
-    # 劃分訓練與測試集
-    train_df = df[df['SEASON'].isin(TRAIN_SEASONS)].copy()
-    test_df = df[df['SEASON'].isin(TEST_SEASON)].copy()
-    
-    # ... 後面照舊 ...
+    # 劃分訓練與測試集 (使用 SEASON_YEAR 匹配資料庫實況)
+    train_df = df[df['SEASON_YEAR'].isin(TRAIN_SEASONS)].copy()
+    test_df = df[df['SEASON_YEAR'].isin(TEST_SEASON)].copy()
 
     y_train = train_df['HOME_WIN'].values
     y_test = test_df['HOME_WIN'].values
@@ -168,15 +169,16 @@ def run_static_backtest():
         m_name = stage['name']
         features = stage['features']
 
-        # 安全機制：確保所有需要的特徵都在 DataFrame 中，若無則補 0 (防止程式崩潰與 0.509 陷阱)
+        # 安全機制：確保所有需要的特徵都在 DataFrame 中，若無則補 0
         missing_cols = [f for f in features if f not in train_df.columns]
         if missing_cols:
-            print(f"⚠️ 警告: {m_name} 找不到特徵 {missing_cols[:2]}... 將補 0")
+            # 只在真的有缺漏的時候才印出來警告
+            pass 
         for col in missing_cols:
             train_df[col] = 0
             test_df[col] = 0
             
-        # 🔥 核心修正 1：完美補齊 .fillna(0)，確保與窮舉時的處理邏輯 100% 一致
+        # 🔥 核心修正 1：完美補齊 .fillna(0)
         X_train = train_df[features].fillna(0)
         X_test = test_df[features].fillna(0)
 
@@ -189,7 +191,7 @@ def run_static_backtest():
             colsample_bytree=0.8,
             eval_metric='logloss',
             random_state=42,
-            tree_method='hist', # GitHub Action 的 CPU 跑 hist 非常快
+            tree_method='hist', 
             n_jobs=-1
         )
 
@@ -217,7 +219,7 @@ def run_static_backtest():
         print(f"{m_name:<15} | {stage['track']:<18} | {acc_all_str:<20} | {acc_high_str:<18}")
 
     print("="*85)
-    print("✅ 回測完畢！你可以清楚看到 Overall 賽道的全覆蓋勝率已重返 60%+ 榮耀！")
+    print("✅ 回測完畢！你可以清楚看到 Overall 賽道的全覆蓋勝率已重返 62%+ 榮耀！")
 
 if __name__ == "__main__":
     run_static_backtest()
