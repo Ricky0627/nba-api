@@ -70,7 +70,7 @@ def build_master_features():
     
     print("🔌 正在從 GitHub 資料庫讀取數據...")
     
-    # --- 讀取所有必要表 (使用 GitHub 專用方法) ---
+    # --- 讀取所有必要表 ---
     base = get_merged_dataframe("boxscore_base")
     adv = get_merged_dataframe("boxscore_advanced")
     ff = get_merged_dataframe("boxscore_four_factors")
@@ -83,17 +83,16 @@ def build_master_features():
     quarterly = get_merged_dataframe("team_features_quarterly")
     
     games_raw = get_merged_dataframe("games")
-    # 保證 games_raw 的欄位都是小寫，完美對齊你在 SQLite 中的習慣
+    # 將 games_raw 欄位轉小寫以完全對齊你的程式碼邏輯
     games_raw.columns = [c.lower() for c in games_raw.columns]
     
     # 確保 ID 格式統一
     for df in [base, adv, ff, hustle, scoring, clutch, shot, tov, momentum, quarterly]:
         if not df.empty:
-            # 確保大表合併用的 GAME_ID 與 TEAM_ID 是大寫
-            col_map = {c: c.upper() for c in df.columns if c.upper() in ['GAME_ID', 'TEAM_ID']}
-            df.rename(columns=col_map, inplace=True)
-            df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
-            df['TEAM_ID'] = df['TEAM_ID'].astype(int)
+            if 'GAME_ID' in df.columns:
+                df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
+            if 'TEAM_ID' in df.columns:
+                df['TEAM_ID'] = df['TEAM_ID'].astype(int)
 
     # --- 大合併 (包含 TEAM_ABBREVIATION 以解決字串合併錯誤) ---
     df_master = base[['GAME_ID', 'TEAM_ID', 'TEAM_ABBREVIATION', 'MATCHUP', 'GAME_DATE', 'SEASON_YEAR', 'WL']].copy()
