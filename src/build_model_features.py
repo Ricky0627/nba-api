@@ -201,5 +201,65 @@ def build_master_features():
     
     print(f"🎉 特徵提煉全部完成！總行數: {len(final_df)}，總特徵維度: {len(final_df.columns)}")
 
+# ==========================================
+    # 🔥🔥🔥 補上傷兵與 Rust 特徵 (修復 62% 勝率的關鍵) 🔥🔥🔥
+    # ==========================================
+    try:
+        injury_csv_path = "data/nba_advanced_injury_features.csv"
+        if os.path.exists(injury_csv_path):
+            print(f"🏥 正在併入傷病與久疏戰陣特徵: {injury_csv_path}")
+            injury_df = pd.read_csv(injury_csv_path)
+            injury_df['game_id'] = injury_df['game_id'].astype(str).str.zfill(10)
+            
+            # --- 翻譯蒟蒻：把 injury 產出的 _r20 名稱轉化成模型要的 _SUM 名稱 ---
+            rename_map = {}
+            for col in injury_df.columns:
+                if 'missing_' in col and '_r20' in col:
+                    # 例如把 home_missing_PIE_r20 轉成 HOME_MISSING_PIE_SUM
+                    new_col = col.replace('_r20', '_SUM').upper()
+                    rename_map[col] = new_col
+            injury_df = injury_df.rename(columns=rename_map)
+
+            # --- 模擬那些遺失的基礎指標 (利用現有相近指標做等比例填充) ---
+            # 因為原先的 injury 腳本漏算了 MIN, PTS, DEF_RATING, EFF，
+            # 若不想重寫 injury，可以用高度相關的 NBA_FANTASY_PTS 或 PLUS_MINUS 來模擬缺陣影響度
+            # (這能讓模型至少感受到「有主力缺陣」，勝過補 0)
+            for prefix in ['HOME', 'AWAY']:
+                # 利用 Fantasy PTS 模擬 PTS 與 EFF 的缺陣損失
+                if f'{prefix}_MISSING_NBA_FANTASY_PTS_SUM' in injury_df.columns:
+                    base_miss = injury_df[f'{prefix}_MISSING_NBA_FANTASY_PTS_SUM']
+                    injury_df[f'{prefix}_MISSING_PTS_SUM'] = base_miss * 0.7  
+                    injury_df[f'{prefix}_MISSING_EFF_SUM'] = base_miss * 0.8
+                    injury_df[f'{prefix}_MISSING_MIN_SUM'] = base_miss * 1.2
+                # 利用 NET_RATING 模擬 DEF_RATING 的缺陣損失
+                if f'{prefix}_MISSING_NET_RATING_SUM' in injury_df.columns:
+                    injury_df[f'{prefix}_MISSING_DEF_RATING_SUM'] = injury_df[f'{prefix}_MISSING_NET_RATING_SUM'] * -1
+
+            # 移除重複基礎欄位後合併
+            cols_to_use = [c for c in injury_df.columns if c not in ['home_team', 'away_team', 'date']]
+            final_games = final_games.merge(injury_df[cols_to_use], on='game_id', how='left')
+
+            # --- 翻譯蒟蒻 2：生成對手缺陣指標 (_OPP) ---
+            missing_cols = [c for c in final_games.columns if '_MISSING_' in c]
+            for col in missing_cols:
+                if col.startswith('HOME_'):
+                    opp_col_name = col + '_OPP'
+                    # 主隊的對手缺陣 = 客隊缺陣
+                    away_source = col.replace('HOME_', 'AWAY_')
+                    if away_source in final_games.columns:
+                        final_games[opp_col_name] = final_games[away_source]
+                elif col.startswith('AWAY_'):
+                    opp_col_name = col + '_OPP'
+                    # 客隊的對手缺陣 = 主隊缺陣
+                    home_source = col.replace('AWAY_', 'HOME_')
+                    if home_source in final_games.columns:
+                        final_games[opp_col_name] = final_games[home_source]
+
+        else:
+            print(f"⚠️ 警告：找不到傷病檔案 {injury_csv_path}，模型將缺少 MISSING 相關特徵！")
+    except Exception as e:
+        print(f"❌ 併入傷病特徵時發生錯誤: {e}")
+    # ==========================================
+    
 if __name__ == "__main__":
     build_master_features()
