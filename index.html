@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NBA 24 神聯軍 AI 預測儀表板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        body { background-color: #0f172a; }
+        .tag-king { background-color: rgba(234, 179, 8, 0.15); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4); }
+        .tag-sniper { background-color: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); }
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); }
+    </style>
+</head>
+<body class="text-gray-200 font-sans min-h-screen pb-10">
+
+    <nav class="border-b border-gray-800 bg-gray-900/50 sticky top-0 z-50 backdrop-blur-md">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+                🏀 NBA 神聯軍 AI 預測
+            </h1>
+            <div id="date-display" class="text-sm font-medium text-gray-400 bg-gray-800 px-3 py-1 rounded-full">
+                載入中...
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <p class="text-gray-400 mb-8 text-center text-sm md:text-base">
+            <span class="text-yellow-400 font-bold">👑 絕對王者</span>：硬猜勝率 >61%，無腦跟單指標<br class="md:hidden">
+            <span class="text-red-400 font-bold ml-0 md:ml-4">🎯 狙擊標籤</span>：其餘模型信心值大於 53% 才會觸發
+        </p>
+
+        <div id="matchups-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="col-span-full text-center py-20 text-gray-500 animate-pulse">
+                讀取最新 AI 預測數據中...
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // 定義絕對王者模型名單
+        const KINGS_MODELS = ['Overall_Rank1', 'Overall_Rank2', 'Overall_Rank3', 'M014'];
+        const SNIPER_THRESHOLD = 53.0; // 狙擊手觸發門檻
+
+        // 載入與解析 CSV
+        async function loadPredictions() {
+            try {
+                // 讀取 GitHub Pages 上同個 Repo 裡的 CSV 檔案
+                const response = await fetch('data/predictions_history_log.csv');
+                if (!response.ok) throw new Error('無法讀取預測檔案');
+                
+                const csvText = await response.text();
+                
+                Papa.parse(csvText, {
+                    header: true,
+                    dynamicTyping: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        processData(results.data);
+                    }
+                });
+            } catch (error) {
+                document.getElementById('matchups-container').innerHTML = `
+                    <div class="col-span-full text-center py-20 text-red-400 font-bold">
+                        ❌ 載入失敗：找不到資料或網路錯誤。<br><span class="text-sm text-gray-500">${error.message}</span>
+                    </div>`;
+            }
+        }
+
+        // 處理並過濾資料
+        function processData(data) {
+            // 找出 CSV 中最新的比賽日期 (Game_Date)
+            const dates = data.map(row => row.Game_Date).filter(d => d);
+            if (dates.length === 0) return;
+            
+            // 排序取得最新日期
+            dates.sort();
+            const latestDate = dates[dates.length - 1];
+            
+            document.getElementById('date-display').innerText = `📅 賽事日期：${latestDate}`;
+
+            // 只保留最新日期的預測
+            const todayData = data.filter(row => row.Game_Date === latestDate);
+
+            // 將資料按對戰組合 (Matchup) 進行分組
+            const matchups = {};
+            todayData.forEach(row => {
+                if (!matchups[row.Matchup]) matchups[row.Matchup] = [];
+                matchups[row.Matchup].push(row);
+            });
+
+            renderDashboard(matchups);
+        }
+
+        // 渲染網頁畫面
+        function renderDashboard(matchups) {
+            const container = document.getElementById('matchups-container');
+            container.innerHTML = ''; // 清空載入中提示
+
+            for (const [matchupStr, predictions] of Object.entries(matchups)) {
+                // 解析主客隊 (假設格式為 "AWAY @ HOME")
+                const teams = matchupStr.split('@').map(t => t.trim());
+                if (teams.length !== 2) continue;
+                const awayTeam = teams[0];
+                const homeTeam = teams[1];
+
+                // 分類兩個隊伍獲得的標籤
+                const teamTags = {
+                    [awayTeam]: { kings: [], snipers: [] },
+                    [homeTeam]: { kings: [], snipers: [] }
+                };
+
+                predictions.forEach(p => {
+                    const winner = p.Predicted_Winner;
+                    const isKing = KINGS_MODELS.includes(p.Model_Used);
+                    
+                    if (!teamTags[winner]) return; // 防呆
+
+                    if (isKing) {
+                        // 王者無條件上榜
+                        teamTags[winner].kings.push(p);
+                    } else if (p.Confidence_Pct >= SNIPER_THRESHOLD) {
+                        // 其他模型需達到信心門檻
+                        teamTags[winner].snipers.push(p);
+                    }
+                });
+
+                // 產生卡片 HTML
+                const cardHTML = `
+                    <div class="glass-panel rounded-2xl p-5 shadow-xl transition transform hover:-translate-y-1 hover:shadow-2xl">
+                        <div class="flex justify-center items-center mb-6">
+                            <div class="text-xl font-black tracking-wider text-gray-300">${awayTeam}</div>
+                            <div class="mx-4 text-sm font-bold text-gray-500 bg-gray-800 px-3 py-1 rounded-full">@</div>
+                            <div class="text-xl font-black tracking-wider text-white">${homeTeam}</div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            ${generateTeamSectionHTML(awayTeam, teamTags[awayTeam])}
+                            
+                            ${generateTeamSectionHTML(homeTeam, teamTags[homeTeam], true)}
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += cardHTML;
+            }
+        }
+
+        // 產生單一隊伍的標籤區塊 HTML
+        function generateTeamSectionHTML(teamName, tags, isHome = false) {
+            const bgColor = isHome ? 'bg-gray-800/50' : 'bg-gray-800/30';
+            const titleColor = isHome ? 'text-blue-300' : 'text-gray-300';
+            
+            let kingsHTML = tags.kings.map(t => 
+                `<span class="tag-king px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block">
+                    👑 ${t.Model_Used} (${t.Confidence_Pct}%)
+                </span>`
+            ).join('');
+            
+            let snipersHTML = tags.snipers.map(t => 
+                `<span class="tag-sniper px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block">
+                    🎯 ${t.Model_Used} (${t.Confidence_Pct}%)
+                </span>`
+            ).join('');
+
+            if (!kingsHTML) kingsHTML = `<span class="text-xs text-gray-600 italic">無推薦</span>`;
+            if (!snipersHTML) snipersHTML = `<span class="text-xs text-gray-600 italic">無觸發</span>`;
+
+            return `
+                <div class="${bgColor} rounded-xl p-4 border border-gray-700/50">
+                    <h3 class="text-lg font-bold ${titleColor} text-center border-b border-gray-700 pb-2 mb-3">
+                        ${teamName}
+                    </h3>
+                    
+                    <div class="mb-4">
+                        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">絕對王者推薦</div>
+                        <div class="flex flex-wrap gap-1.5">
+                            ${kingsHTML}
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">重砲狙擊 (>53%)</div>
+                        <div class="flex flex-wrap gap-1.5">
+                            ${snipersHTML}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // 啟動程式
+        loadPredictions();
+    </script>
+</body>
+</html>
