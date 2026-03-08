@@ -1,21 +1,25 @@
-name: ⚔️ 回測競技場 (Static vs Rolling)
+name: 🏀 每日 AI 賽事預測 (Daily Prediction)
 
 on:
   workflow_dispatch: # 只有手動觸發，你可以隨時按按鈕執行
+  # 如果你想讓它每天早上 9 點自動跑，把下面兩行的 '#' 拿掉：
+  # schedule:
+  #   - cron: '0 1 * * *' 
 
 jobs:
-  backtest-arena:
+  daily-predict:
     runs-on: windows-latest
     
-    # 👇 加入這兩行，強制 Python 終端機輸出為 UTF-8
+    # 強制 Python 終端機輸出為 UTF-8，避免印出 Emoji 時當機
     env:
       PYTHONIOENCODING: utf-8
       
     steps:
     - name: 📥 取得程式碼
       uses: actions/checkout@v4
-      
-    # ... 下面的步驟保持不變 ...
+      with:
+        # 確保 Action 有推播 (push) 檔案回倉庫的權限
+        token: ${{ secrets.GITHUB_TOKEN }} 
 
     - name: 🐍 設定 Python 3.10 
       uses: actions/setup-python@v5
@@ -28,8 +32,23 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: 🏗️ 第一階段：構建終極特徵大表 (Feature Engineering)
+    - name: 🤖 執行 AI 神聯軍每日預測
       run: |
-        # 重新計算並生成最乾淨、無錯位的 ml_features_master.csv
-        python src/predict_today.py  # 👈 直接呼叫預測腳本，裡面會先確保特徵表是最新的
+        # 直接呼叫預測腳本 (依賴於你管線中已經準備好的最新特徵)
+        python src/predict_today.py
 
+    - name: 💾 儲存預測結果並推送到 GitHub (觸發網頁更新)
+      shell: bash  # 👈 強制使用 bash 確保 git 指令在 Windows 伺服器上也能完美執行
+      run: |
+        # 設定機器人身份
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # 將最新的預測結果加入追蹤
+        git add data/predictions_history_log.csv
+        
+        # 執行 Commit。如果當天沒比賽(檔案沒變)，用 || echo 阻止報錯導致 Action 失敗
+        git commit -m "🤖 自動更新：今日 AI 神聯軍預測結果" || echo "今天沒有新的預測結果需要更新"
+        
+        # 將結果推上 GitHub
+        git push
