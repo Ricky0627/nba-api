@@ -5,7 +5,9 @@ on:
 
 jobs:
   backtest-arena:
-    runs-on: ubuntu-latest
+    # 把原本的 runs-on: ubuntu-latest 刪掉
+    # 改成下面這行，強迫 GitHub 用 Windows 系統幫你跑回測！
+    runs-on: windows-latest
     
     steps:
     - name: 📥 取得程式碼
