@@ -228,7 +228,7 @@ def run_github_backtest():
             random_state=42,
             # --- 👇 關鍵修改：強制對齊邏輯 👇 ---
             tree_method='exact',  # 將 'hist' 改為 'exact' (排除分箱演算法的環境差異)
-            n_jobs=1              # 強制單核心執行 (排除多線程調度隨機性)
+            n_jobs=10              # 強制單核心執行 (排除多線程調度隨機性)
 )
 
         model.fit(X_train, y_train)
