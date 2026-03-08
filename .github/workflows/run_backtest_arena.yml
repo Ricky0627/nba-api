@@ -5,13 +5,17 @@ on:
 
 jobs:
   backtest-arena:
-    # 把原本的 runs-on: ubuntu-latest 刪掉
-    # 改成下面這行，強迫 GitHub 用 Windows 系統幫你跑回測！
     runs-on: windows-latest
     
+    # 👇 加入這兩行，強制 Python 終端機輸出為 UTF-8
+    env:
+      PYTHONIOENCODING: utf-8
+      
     steps:
     - name: 📥 取得程式碼
       uses: actions/checkout@v4
+      
+    # ... 下面的步驟保持不變 ...
 
     - name: 🐍 設定 Python 3.10 
       uses: actions/setup-python@v5
