@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
 import os
-import joblib
 import warnings
 from datetime import datetime
+from xgboost import XGBClassifier
 
 warnings.filterwarnings('ignore')
 
@@ -16,10 +16,7 @@ MODEL_DIR = 'models/'
 OUTPUT_PREDICTION = 'data/predictions_history_log.csv' 
 
 # ==========================================
-# 🏆 24 神聯軍全特徵定義 (18個賽道前三 + 6個瀑布流)
-# ==========================================
-# ==========================================
-# 🏆 24 神聯軍全特徵定義 (純淨版，已剔除 TEAM_ID)
+# 🏆 24 神聯軍全特徵定義 (封印權重專用版)
 # ==========================================
 ALL_MODELS = [
     # ---------------- 50G 賽道 ----------------
@@ -72,7 +69,6 @@ ALL_MODELS = [
     },
     {
         "name": "150G_Rank3", "track": "150G (Rank 3)",
-        # ⚠️ 這裡已經將原本的 HOME_TEAM_ID 徹底移除！
         "features": ['AWAY_CONTESTED_SHOTS_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L10', 'AWAY_PCT_PTS_PAINT_L10', 'HOME_PCT_PTS_PAINT_L5', 'AWAY_OREB_PCT_L10', 'HOME_PACE_L10', 'HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_MID_FREQ_S2D', 'AWAY_FTA_RATE_L3', 'HOME_EFG_PCT_L10', 'AWAY_MID_FREQ_L5', 'HOME_TM_TOV_PCT_S2D', 'HOME_PCT_PTS_3PT_L5', 'HOME_MOREYBALL_INDEX_L10', 'AWAY_CHARGES_DRAWN_L10', 'HOME_PCT_AST_FGM_L10', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_DEF_RATING_L10', 'HOME_CLUTCH_TS_PCT_S2D', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_TS_PCT_L10', 'AWAY_PCT_PTS_3PT_L10', 'HOME_EFFICIENCY_TREND', 'AWAY_FTA_RATE_L10', 'HOME_MISSING_DEF_RATING_SUM']
     },
     # ---------------- 200G 賽道 ----------------
@@ -120,7 +116,6 @@ ALL_MODELS = [
     },
     {
         "name": "M126", "track": "King (200G 重砲)",
-        # ⚠️ 這裡已經將原本的 HOME_TEAM_ID 徹底移除！
         "features": ['HOME_LOOSE_BALLS_RECOVERED_S2D', 'AWAY_CONTESTED_SHOTS_L10', 'HOME_TS_PCT_L10', 'HOME_PCT_AST_FGM_L5', 'HOME_PACE_S2D', 'HOME_PCT_PTS_3PT_L3', 'AWAY_PCT_PTS_PAINT_L5', 'HOME_CLUTCH_TS_PCT_S2D', 'HOME_EFG_PCT_L10', 'AWAY_SCREEN_ASSISTS_S2D', 'HOME_TM_TOV_PCT_S2D', 'AWAY_PCT_PTS_3PT_L10', 'AWAY_RUNS_10_0_COUNT_L3', 'HOME_RUNS_10_0_COUNT_S2D', 'HOME_PACE_L10', 'HOME_MISSING_EFF_SUM']
     },
     {
@@ -132,12 +127,24 @@ ALL_MODELS = [
 def load_latest_features():
     print("🔍 正在從特徵大表提取各隊最新實力指標...")
     df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
+    
+    # 1. 統一轉大寫
+    df_master.columns = [c.upper() for c in df_master.columns]
+
+    # 🔥 2. 自動變形器：把大表的 _HOME, _AWAY 後綴轉換成 HOME_, AWAY_ 前綴！
+    new_cols = []
+    for c in df_master.columns:
+        if c.endswith('_HOME'):
+            new_cols.append('HOME_' + c[:-5])
+        elif c.endswith('_AWAY'):
+            new_cols.append('AWAY_' + c[:-5])
+        else:
+            new_cols.append(c)
+    df_master.columns = new_cols
+    
     df_master = df_master.fillna(0)
     
-    # 🌟 防呆大絕招：強制把特徵大表的所有欄位都轉大寫，保證名稱絕對對應！
-    df_master.columns = [c.upper() for c in df_master.columns]
-    
-    # 因為轉了大寫，原本的 home_team 會變成 HOME_TEAM
+    # 取出各球隊「最新一場」的特徵數據
     latest_home = df_master.drop_duplicates(subset=['HOME_TEAM'], keep='last').copy()
     latest_away = df_master.drop_duplicates(subset=['AWAY_TEAM'], keep='last').copy()
     
@@ -147,7 +154,7 @@ def load_latest_features():
     return team_latest_home_stats, team_latest_away_stats
 
 def predict_upcoming_games():
-    print(f"🚀 啟動 NBA {len(ALL_MODELS)}神聯軍全預測系統！ (全軍出擊模式)")
+    print(f"🚀 啟動 NBA {len(ALL_MODELS)}神聯軍全預測系統！ (神級權重封印版)")
     
     if not os.path.exists(UPCOMING_CSV):
         print("❌ 找不到今日賽程 (upcoming_games.csv)！今日可能無賽事。")
@@ -160,17 +167,22 @@ def predict_upcoming_games():
         
     home_stats_dict, away_stats_dict = load_latest_features()
     
+    # ==========================================
+    # 🔮 核心修改：讀取 .json 格式的封印大腦
+    # ==========================================
     models = {}
     for stage in ALL_MODELS:
         m_name = stage['name']
-        model_path = os.path.join(MODEL_DIR, f"{m_name}.pkl")
+        model_path = os.path.join(MODEL_DIR, f"{m_name}.json") # 改為讀取 .json
         if os.path.exists(model_path):
-            models[m_name] = joblib.load(model_path)
+            model = XGBClassifier()
+            model.load_model(model_path)
+            models[m_name] = model
         else:
-            print(f"⚠️ 警告: 找不到模型檔案 {model_path}")
+            print(f"⚠️ 警告: 找不到模型檔案 {model_path}，將跳過此模型的預測。")
     
     if not models:
-        print("❌ 沒有任何可用的模型，預測中止。請確認 models/ 資料夾內有對應的 .pkl 檔案！")
+        print("❌ 沒有任何可用的模型，預測中止。請確認 models/ 資料夾內有對應的 .json 檔案！")
         return
 
     predictions_log = []
@@ -187,32 +199,34 @@ def predict_upcoming_games():
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
+        # 建立今日賽事獨有上下文
         today_context = {
             "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
             "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
+            "HOME_REST_DAYS": row.get('home_rest_days', 2), 
+            "AWAY_REST_DAYS": row.get('away_rest_days', 2)
         }
+        
+        # 統合所有的特徵進一個大字典
+        X_input = {}
+        X_input.update(home_features)
+        X_input.update(away_features)
+        X_input.update(today_context)
         
         print(f"🏀 {matchup_name}")
         
-        # 強制讓清單上「所有模型」都跑一次！
+        # 讓清單上「所有成功載入的模型」都跑一次！
         for stage in ALL_MODELS:
             m_name = stage['name']
             if m_name not in models: continue
             
-            X_input = {}
-            for feat in stage['features']:
-                # 確保我們查詢的特徵名稱也都是大寫
-                feat_upper = feat.upper()
-                if feat_upper in today_context:
-                    X_input[feat_upper] = today_context[feat_upper]
-                elif feat_upper.startswith('HOME_'):
-                    X_input[feat_upper] = home_features.get(feat_upper, 0)
-                elif feat_upper.startswith('AWAY_'):
-                    X_input[feat_upper] = away_features.get(feat_upper, 0)
-                else:
-                    X_input[feat_upper] = 0
+            features_list = stage['features']
             
-            X_df = pd.DataFrame([X_input])
+            # 從 X_input 中精準萃取該模型需要的特徵，找不到就補 0
+            X_model_dict = {f: X_input.get(f, 0) for f in features_list}
+            
+            # 強制轉換為 float32，保證雲端與本地二進位對齊
+            X_df = pd.DataFrame([X_model_dict])[features_list].astype('float32')
             
             # 取得預測機率
             prob = models[m_name].predict_proba(X_df)[0]
@@ -221,7 +235,7 @@ def predict_upcoming_games():
             confidence = max(prob[0], prob[1])
             predicted_winner = home_team if home_win_prob >= 0.5 else away_team
             
-            # 記錄每一個模型的結果
+            # 記錄預測結果
             prediction_record = {
                 "Run_Time": run_timestamp,
                 "Game_Date": game_date,
@@ -233,7 +247,7 @@ def predict_upcoming_games():
             }
             predictions_log.append(prediction_record)
             
-            # 印出該模型結果 (排版對齊，看起來更專業)
+            # 印出該模型結果
             print(f"   📊 [{m_name:<15} | {stage['track']:<18}] 預測: {predicted_winner:<3} (信心: {round(confidence*100, 2)}%)")
             
         print("-" * 60)
