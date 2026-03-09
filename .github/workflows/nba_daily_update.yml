@@ -51,7 +51,8 @@ jobs:
         git add -f data/nba_advanced_injury_features.csv || true
         git add -f data/upcoming_games.csv || true
         git add -f data/ml_features_master.csv || true
-        git add -f data/predictions_history_log.csv || true  # 👈 新增：把預測歷史日誌也存檔
+        git add -f data/predictions_history_log.csv || true     # 👈 讓分盤預測歷史日誌
+        git add -f data/ou_predictions_history_log.csv || true  # 👈 關鍵新增：大小分預測歷史日誌！
         
         # 檢查是否有變更，有的話就 Commit 並 Push 回去
         git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 Auto-update NBA data & ML predictions [skip ci]" && git push)
