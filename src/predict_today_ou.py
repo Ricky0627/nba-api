@@ -13,10 +13,12 @@ warnings.filterwarnings('ignore')
 # ==========================================
 UPCOMING_CSV = 'data/upcoming_games.csv'
 MASTER_FEATURES_CSV = 'data/ml_features_master.csv'
-MODEL_DIR = 'models_ou/'  # 👈 假設你的大小分 XGBoost 模型存在這 (或替換為正確路徑)
-JSON_MODELS_DIR = 'OU_Best_Models/' # 👈 剛剛產生的特徵 JSON 資料夾
-OUTPUT_PREDICTION = 'data/ou_predictions_history_log.csv' 
 
+# 這裡要對齊我們剛才設定的資料夾！
+JSON_MODELS_DIR = 'models_ou/'              # 👈 這是讀取特徵清單的路徑
+MODEL_DIR = 'trained_models_ou/'            # 👈 這是讀取 XGBoost 權重的路徑
+
+OUTPUT_PREDICTION = 'data/ou_predictions_history_log.csv'
 # ==========================================
 # 🏆 動態載入大小分神級特徵 (從 JSON)
 # ==========================================
