@@ -174,13 +174,16 @@ def settle_past_predictions():
         # 統一日期格式 YYYY-MM-DD
         completed_games['DATE_STR'] = pd.to_datetime(completed_games[date_col]).dt.strftime('%Y-%m-%d')
 
-        # 建立「賽果字典」：對戰組合_日期 -> 贏下讓分盤的隊伍
+        # 建立「賽果字典」：對戰組合_日期 -> {winner: 贏下讓分盤的隊伍, line: 最終盤口}
         actual_results = {}
         for _, row in completed_games.iterrows():
             matchup = f"{row['AWAY_TEAM']} @ {row['HOME_TEAM']}"
             winner = row['HOME_TEAM'] if row['HOME_WIN_ATS'] else row['AWAY_TEAM']
             key = f"{matchup}_{row['DATE_STR']}"
-            actual_results[key] = winner
+            actual_results[key] = {
+                'winner': winner,
+                'line': row['TW_SPREAD_SCORE']
+            }
 
         # 開始配對並結算
         settled_count = 0
@@ -192,10 +195,10 @@ def settle_past_predictions():
                 pred_date_str = str(row['Game_Date']).strip()
 
             key = f"{row['Matchup']}_{pred_date_str}"
-            matched_winner = None
+            matched_data = None
 
             if key in actual_results:
-                matched_winner = actual_results[key]
+                matched_data = actual_results[key]
             else:
                 # 容錯機制：因為時區問題，如果當天找不到，嘗試找前後一天打的比賽
                 try:
@@ -204,16 +207,22 @@ def settle_past_predictions():
                     key_next = f"{row['Matchup']}_{(pred_dt + pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
                     
                     if key_prev in actual_results: 
-                        matched_winner = actual_results[key_prev]
+                        matched_data = actual_results[key_prev]
                     elif key_next in actual_results: 
-                        matched_winner = actual_results[key_next]
+                        matched_data = actual_results[key_next]
                 except:
                     pass
 
             # 如果成功配對到賽果，進行結算
-            if matched_winner:
+            if matched_data:
                 # 如果模型預測的隊伍 == 實際過盤的隊伍，Is_Win 填入 1，否則填 0
-                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_Winner'] == matched_winner else 0
+                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_Winner'] == matched_data['winner'] else 0
+                
+                # 🔥 自動回填盤口機制：如果當初沒抓到盤口（空值或未開盤），結算時順便從大表補回去！
+                current_line = str(row.get('Line', '')).strip()
+                if current_line in ['', 'nan', 'NaN', '未開盤', 'None']:
+                    preds_df.at[idx, 'Line'] = matched_data['line']
+                    
                 settled_count += 1
 
         if settled_count > 0:
@@ -303,6 +312,13 @@ def predict_upcoming_games():
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
+        # 🎯 新增：抓取今日讓分盤口數字
+        game_line = row.get('tw_spread', row.get('TW_SPREAD_SCORE'))
+        if pd.isna(game_line) or game_line == '':
+            game_line = home_features.get('TW_SPREAD_SCORE', '未開盤')
+        if pd.isna(game_line) or game_line == '':
+            game_line = '未開盤'
+        
         today_context = {
             "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
             "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
@@ -323,7 +339,7 @@ def predict_upcoming_games():
                 
         X_input.update(today_context)
         
-        print(f"🏀 {matchup_name}")
+        print(f"🏀 {matchup_name} (讓分盤口: {game_line})")
         
         for stage in ALL_MODELS:
             m_name = stage['name']
@@ -346,13 +362,14 @@ def predict_upcoming_games():
                 "Track_Name": stage['track'],
                 "Predicted_Winner": predicted_winner,
                 "Confidence_Pct": round(confidence * 100, 2),
-                "Is_Win": np.nan # 新預測的單子，預設為未結算
+                "Is_Win": np.nan, # 新預測的單子，預設為未結算
+                "Line": game_line # 👈 新增：把讓分盤數字寫入 CSV
             }
             predictions_log.append(prediction_record)
             
             # 🔥 視覺化門檻提示 (大於 53% 標示火焰)
             conf_pct = round(confidence * 100, 2)
-            is_overall = ('OVERALL' in str(stage['track']).upper())
+            is_overall = ('OVERALL' in str(stage['track']).upper() or 'M014' in m_name)
             
             if is_overall:
                 action_tag = "👉 [全覆蓋推]"

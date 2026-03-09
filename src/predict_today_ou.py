@@ -39,11 +39,11 @@ def load_ou_models_config():
 ALL_MODELS = load_ou_models_config()
 
 # ==========================================
-# 🥇 賽後自動結算系統 (大小分專用)
+# 🥇 賽後自動結算系統 (大小分專用 - 加入盤口回填)
 # ==========================================
 def settle_past_predictions():
     print("\n" + "="*60)
-    print("🔄 啟動賽後自動結算系統 (核對大小分結果)...")
+    print("🔄 啟動賽後自動結算系統 (核對大小分結果與回填盤口)...")
     
     if not os.path.exists(OUTPUT_PREDICTION):
         print("   ℹ️ 尚未產生任何大小分預測紀錄檔，跳過結算。")
@@ -93,12 +93,15 @@ def settle_past_predictions():
         # 統一日期格式 YYYY-MM-DD
         completed_games['DATE_STR'] = pd.to_datetime(completed_games[date_col]).dt.strftime('%Y-%m-%d')
 
-        # 建立「賽果字典」：對戰組合_日期 -> ACTUAL_OU (OVER/UNDER)
+        # 建立「賽果字典」：對戰組合_日期 -> {winner: 實際大小分結果, line: 最終盤口}
         actual_results = {}
         for _, row in completed_games.iterrows():
             matchup = f"{row['AWAY_TEAM']} @ {row['HOME_TEAM']}"
             key = f"{matchup}_{row['DATE_STR']}"
-            actual_results[key] = row['ACTUAL_OU']
+            actual_results[key] = {
+                'winner': row['ACTUAL_OU'],
+                'line': row['TW_TOTAL_SCORE']
+            }
 
         # 開始配對並結算
         settled_count = 0
@@ -109,10 +112,10 @@ def settle_past_predictions():
                 pred_date_str = str(row['Game_Date']).strip()
 
             key = f"{row['Matchup']}_{pred_date_str}"
-            matched_result = None
+            matched_data = None
 
             if key in actual_results:
-                matched_result = actual_results[key]
+                matched_data = actual_results[key]
             else:
                 # 容錯機制：時區問題找前後一天
                 try:
@@ -121,21 +124,27 @@ def settle_past_predictions():
                     key_next = f"{row['Matchup']}_{(pred_dt + pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
                     
                     if key_prev in actual_results: 
-                        matched_result = actual_results[key_prev]
+                        matched_data = actual_results[key_prev]
                     elif key_next in actual_results: 
-                        matched_result = actual_results[key_next]
+                        matched_data = actual_results[key_next]
                 except:
                     pass
 
             # 如果成功配對到賽果，進行結算
-            if matched_result:
+            if matched_data:
                 # 如果模型預測 (OVER/UNDER) == 實際賽果 (OVER/UNDER)，Is_Win 填入 1，否則填 0
-                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_OU'] == matched_result else 0
+                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_OU'] == matched_data['winner'] else 0
+                
+                # 🔥 自動回填盤口機制：如果當初沒抓到盤口（空值或未開盤），結算時順便從大表補回去！
+                current_line = str(row.get('Line', '')).strip()
+                if current_line in ['', 'nan', 'NaN', '未開盤', 'None']:
+                    preds_df.at[idx, 'Line'] = matched_data['line']
+                    
                 settled_count += 1
 
         if settled_count > 0:
             preds_df.to_csv(OUTPUT_PREDICTION, index=False, encoding='utf-8-sig')
-            print(f"   💰 結算完成！成功為 {settled_count} 筆大小分歷史注單更新了賽果。")
+            print(f"   💰 結算完成！成功為 {settled_count} 筆大小分歷史注單更新了賽果與盤口。")
         else:
             print("   ⏳ 尚無最新賽果可供結算 (比賽可能還沒打完，或遇到走水/未開盤)。")
 
@@ -224,6 +233,13 @@ def predict_upcoming_games():
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
+        # 🎯 新增：抓取今日大小分盤口數字
+        game_line = row.get('tw_total', row.get('TW_TOTAL_SCORE'))
+        if pd.isna(game_line) or game_line == '':
+            game_line = home_features.get('TW_TOTAL_SCORE', '未開盤')
+        if pd.isna(game_line) or game_line == '':
+            game_line = '未開盤'
+
         today_context = {
             "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
             "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
@@ -244,7 +260,7 @@ def predict_upcoming_games():
                 
         X_input.update(today_context)
         
-        print(f"🏀 {matchup_name}")
+        print(f"🏀 {matchup_name} (大小盤口: {game_line})")
         
         for stage in ALL_MODELS:
             m_name = stage['name']
@@ -269,7 +285,8 @@ def predict_upcoming_games():
                 "Track_Name": stage['track'],
                 "Predicted_OU": predicted_ou,
                 "Confidence_Pct": round(confidence * 100, 2),
-                "Is_Win": np.nan # 新預測的單子，預設為未結算
+                "Is_Win": np.nan, # 新預測的單子，預設為未結算
+                "Line": game_line # 👈 新增：把大小分盤數字寫入 CSV
             }
             predictions_log.append(prediction_record)
             
@@ -300,7 +317,7 @@ def predict_upcoming_games():
         print(f"\n✅ 今日大小分預測完畢！總計 {len(predictions_log)} 筆結果已成功【更新/追加】至: {OUTPUT_PREDICTION}")
 
 if __name__ == "__main__":
-    # 1. 先執行結算，把過去的單子對獎
+    # 1. 先執行結算，把過去的單子對獎 (順便回填漏抓的 Line 盤口)
     settled = settle_past_predictions()
     
     # 2. 再執行今日賽事預測
