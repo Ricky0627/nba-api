@@ -124,6 +124,112 @@ ALL_MODELS = [
     }
 ]
 
+# ==========================================
+# 🥇 賽後自動結算系統 (過盤率更新核心)
+# ==========================================
+def settle_past_predictions():
+    print("\n" + "="*60)
+    print("🔄 啟動賽後自動結算系統 (核對過盤結果)...")
+    
+    if not os.path.exists(OUTPUT_PREDICTION):
+        print("   ℹ️ 尚未產生任何預測紀錄檔，跳過結算。")
+        return
+
+    # 讀取預測紀錄
+    preds_df = pd.read_csv(OUTPUT_PREDICTION)
+    
+    # 若沒有 Is_Win 欄位，自動加上
+    if 'Is_Win' not in preds_df.columns:
+        preds_df['Is_Win'] = np.nan
+
+    # 找出尚未結算的注單
+    unsettled_mask = preds_df['Is_Win'].isna()
+    if not unsettled_mask.any():
+        print("   ✅ 所有歷史預測皆已結算完畢！")
+        return
+
+    try:
+        # 讀取最新特徵大表 (裡面包含已打完的賽事分數與盤口)
+        df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
+        df_master.columns = [c.upper() for c in df_master.columns]
+
+        if 'HOME_SCORE' not in df_master.columns or 'TW_SPREAD_SCORE' not in df_master.columns:
+            print("   ⚠️ 特徵大表中缺乏分數或盤口欄位，無法自動結算。")
+            return
+
+        # 濾出已經打完、且有盤口的賽事
+        completed_games = df_master.dropna(subset=['HOME_SCORE', 'AWAY_SCORE', 'TW_SPREAD_SCORE']).copy()
+        completed_games['TW_SPREAD_SCORE'] = pd.to_numeric(completed_games['TW_SPREAD_SCORE'], errors='coerce')
+        
+        # 計算淨勝分與讓分盤賽果
+        completed_games['PLUS_MINUS'] = completed_games['HOME_SCORE'] - completed_games['AWAY_SCORE']
+        completed_games['HOME_WIN_ATS'] = (completed_games['PLUS_MINUS'] + completed_games['TW_SPREAD_SCORE'] > 0)
+
+        # 找出日期欄位
+        date_col = 'GAME_DATE' if 'GAME_DATE' in completed_games.columns else ('DATE' if 'DATE' in completed_games.columns else None)
+        if not date_col:
+            print("   ⚠️ 找不到日期欄位，無法配對比賽。")
+            return
+
+        # 統一日期格式 YYYY-MM-DD
+        completed_games['DATE_STR'] = pd.to_datetime(completed_games[date_col]).dt.strftime('%Y-%m-%d')
+
+        # 建立「賽果字典」：對戰組合_日期 -> 贏下讓分盤的隊伍
+        actual_results = {}
+        for _, row in completed_games.iterrows():
+            matchup = f"{row['AWAY_TEAM']} @ {row['HOME_TEAM']}"
+            winner = row['HOME_TEAM'] if row['HOME_WIN_ATS'] else row['AWAY_TEAM']
+            key = f"{matchup}_{row['DATE_STR']}"
+            actual_results[key] = winner
+
+        # 開始配對並結算
+        settled_count = 0
+        for idx, row in preds_df[unsettled_mask].iterrows():
+            try:
+                # 統一預測檔中的日期格式
+                pred_date_str = pd.to_datetime(str(row['Game_Date']).strip()).strftime('%Y-%m-%d')
+            except:
+                pred_date_str = str(row['Game_Date']).strip()
+
+            key = f"{row['Matchup']}_{pred_date_str}"
+            matched_winner = None
+
+            if key in actual_results:
+                matched_winner = actual_results[key]
+            else:
+                # 容錯機制：因為時區問題，如果當天找不到，嘗試找前後一天打的比賽
+                try:
+                    pred_dt = pd.to_datetime(pred_date_str)
+                    key_prev = f"{row['Matchup']}_{(pred_dt - pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
+                    key_next = f"{row['Matchup']}_{(pred_dt + pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
+                    
+                    if key_prev in actual_results: 
+                        matched_winner = actual_results[key_prev]
+                    elif key_next in actual_results: 
+                        matched_winner = actual_results[key_next]
+                except:
+                    pass
+
+            # 如果成功配對到賽果，進行結算
+            if matched_winner:
+                # 如果模型預測的隊伍 == 實際過盤的隊伍，Is_Win 填入 1，否則填 0
+                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_Winner'] == matched_winner else 0
+                settled_count += 1
+
+        if settled_count > 0:
+            # 將結算完的結果存回 CSV
+            preds_df.to_csv(OUTPUT_PREDICTION, index=False, encoding='utf-8-sig')
+            print(f"   💰 結算完成！成功為 {settled_count} 筆歷史注單更新了賽果 (過盤勝率已更新)。")
+        else:
+            print("   ⏳ 尚無最新賽果可供結算 (比賽可能還沒打完，或大表尚未更新)。")
+
+    except Exception as e:
+        print(f"   ❌ 結算過程中發生錯誤: {e}")
+    print("="*60)
+
+# ==========================================
+# 🔍 載入特徵與預測核心
+# ==========================================
 def load_latest_features():
     print("🔍 正在從特徵大表提取各隊最新實力指標...")
     df_master = pd.read_csv(MASTER_FEATURES_CSV, low_memory=False)
@@ -167,13 +273,11 @@ def predict_upcoming_games():
         
     home_stats_dict, away_stats_dict = load_latest_features()
     
-    # ==========================================
-    # 🔮 核心修改：讀取 .json 格式的封印大腦
-    # ==========================================
+    # 讀取 .json 格式的封印大腦
     models = {}
     for stage in ALL_MODELS:
         m_name = stage['name']
-        model_path = os.path.join(MODEL_DIR, f"{m_name}.json") # 改為讀取 .json
+        model_path = os.path.join(MODEL_DIR, f"{m_name}.json")
         if os.path.exists(model_path):
             model = XGBClassifier()
             model.load_model(model_path)
@@ -182,7 +286,7 @@ def predict_upcoming_games():
             print(f"⚠️ 警告: 找不到模型檔案 {model_path}，將跳過此模型的預測。")
     
     if not models:
-        print("❌ 沒有任何可用的模型，預測中止。請確認 models/ 資料夾內有對應的 .json 檔案！")
+        print("❌ 沒有任何可用的模型，預測中止。")
         return
 
     predictions_log = []
@@ -199,7 +303,6 @@ def predict_upcoming_games():
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
-        # 建立今日賽事獨有上下文
         today_context = {
             "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
             "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
@@ -207,7 +310,6 @@ def predict_upcoming_games():
             "AWAY_REST_DAYS": row.get('away_rest_days', 2)
         }
         
-        # 統合所有的特徵進一個大字典
         X_input = {}
         X_input.update(home_features)
         X_input.update(away_features)
@@ -215,27 +317,19 @@ def predict_upcoming_games():
         
         print(f"🏀 {matchup_name}")
         
-        # 讓清單上「所有成功載入的模型」都跑一次！
         for stage in ALL_MODELS:
             m_name = stage['name']
             if m_name not in models: continue
             
             features_list = stage['features']
-            
-            # 從 X_input 中精準萃取該模型需要的特徵，找不到就補 0
             X_model_dict = {f: X_input.get(f, 0) for f in features_list}
-            
-            # 強制轉換為 float32，保證雲端與本地二進位對齊
             X_df = pd.DataFrame([X_model_dict])[features_list].astype('float32')
             
-            # 取得預測機率
             prob = models[m_name].predict_proba(X_df)[0]
             home_win_prob = prob[1]
-            
             confidence = max(prob[0], prob[1])
             predicted_winner = home_team if home_win_prob >= 0.5 else away_team
             
-            # 記錄預測結果
             prediction_record = {
                 "Run_Time": run_timestamp,
                 "Game_Date": game_date,
@@ -243,11 +337,11 @@ def predict_upcoming_games():
                 "Model_Used": m_name,
                 "Track_Name": stage['track'],
                 "Predicted_Winner": predicted_winner,
-                "Confidence_Pct": round(confidence * 100, 2)
+                "Confidence_Pct": round(confidence * 100, 2),
+                "Is_Win": np.nan # 新預測的單子，預設為未結算
             }
             predictions_log.append(prediction_record)
             
-            # 印出該模型結果
             print(f"   📊 [{m_name:<15} | {stage['track']:<18}] 預測: {predicted_winner:<3} (信心: {round(confidence*100, 2)}%)")
             
         print("-" * 60)
@@ -261,22 +355,22 @@ def predict_upcoming_games():
         
         if os.path.exists(OUTPUT_PREDICTION):
             try:
-                # 讀取既有紀錄
                 df_history = pd.read_csv(OUTPUT_PREDICTION)
-                # 將新舊資料合併
                 df_combined = pd.concat([df_history, df_new], ignore_index=True)
-                # 日期 + 對戰 + 模型名稱 作為唯一鍵值去重
+                # 以 日期+對戰+模型名稱 作為唯一鍵值，若重複則用最新預測覆蓋
                 df_combined = df_combined.drop_duplicates(subset=['Game_Date', 'Matchup', 'Model_Used'], keep='last')
             except Exception as e:
-                print(f"⚠️ 讀取歷史紀錄失敗，將直接覆蓋: {e}")
+                print(f"⚠️ 讀取歷史紀錄失敗: {e}")
                 df_combined = df_new
         else:
             df_combined = df_new
             
-        # 覆蓋寫入
         df_combined.to_csv(OUTPUT_PREDICTION, index=False, encoding='utf-8-sig')
-        
         print(f"\n✅ 今日預測完畢！總計 {len(predictions_log)} 筆預測結果已成功【更新/追加】至: {OUTPUT_PREDICTION}")
 
 if __name__ == "__main__":
+    # 1. 先執行結算，把過去的單子對獎
+    settle_past_predictions()
+    
+    # 2. 再執行今日賽事預測
     predict_upcoming_games()
