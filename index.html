@@ -16,7 +16,13 @@
         .tab-btn { transition: all 0.3s ease; }
         .tab-active { border-bottom: 2px solid #60a5fa; color: #60a5fa; font-weight: bold; }
         .tab-inactive { color: #9ca3af; border-bottom: 2px solid transparent; }
-        .tab-inactive:hover { color: #d1d5db; } /* 正確的 CSS 滑鼠懸停寫法 */
+        .tab-inactive:hover { color: #d1d5db; }
+        
+        /* 捲軸美化 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
     </style>
 </head>
 <body class="text-gray-200 font-sans min-h-screen pb-10">
@@ -53,14 +59,15 @@
         <div id="tab-stats" class="hidden">
             <div class="glass-panel rounded-2xl overflow-hidden shadow-xl">
                 <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
+                    <table class="w-full text-left border-collapse cursor-default">
                         <thead>
                             <tr class="bg-gray-800/80 text-gray-300 text-sm uppercase tracking-wider">
                                 <th class="p-4 font-bold border-b border-gray-700">模型名稱</th>
                                 <th class="p-4 font-bold border-b border-gray-700">所屬賽道</th>
-                                <th class="p-4 font-bold border-b border-gray-700 text-center">總下注數</th>
+                                <th class="p-4 font-bold border-b border-gray-700 text-center">總出手數</th>
                                 <th class="p-4 font-bold border-b border-gray-700 text-center">平均信心</th>
                                 <th class="p-4 font-bold border-b border-gray-700 text-center text-green-400">過盤勝率 (ATS)</th>
+                                <th class="p-4 font-bold border-b border-gray-700 text-center">明細</th>
                             </tr>
                         </thead>
                         <tbody id="stats-table-body" class="divide-y divide-gray-800/50">
@@ -68,12 +75,41 @@
                     </table>
                 </div>
                 <div class="p-4 bg-gray-900/50 text-xs text-gray-500 text-center">
-                    💡 註：過盤勝率 (ATS) 需要系統進行賽後對獎。若目前顯示「待結算」，表示歷史資料庫中尚無比賽真實結果。
+                    💡 點擊「查看」可展開該模型的完整歷史預測明細。<br>
+                    過盤勝率需等待賽後更新 <code>Is_Win</code> 欄位後方可結算。
                 </div>
             </div>
         </div>
 
     </main>
+
+    <div id="history-modal" class="fixed inset-0 z-[100] hidden flex items-center justify-center bg-black/80 backdrop-blur-sm transition-opacity">
+        <div class="glass-panel w-11/12 max-w-4xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden transform transition-transform scale-100">
+            <div class="p-5 border-b border-gray-700 flex justify-between items-center bg-gray-800/90">
+                <div>
+                    <h2 id="modal-title" class="text-xl font-bold text-white">模型名稱</h2>
+                    <p id="modal-subtitle" class="text-sm text-gray-400 mt-1">詳細出手紀錄</p>
+                </div>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white text-3xl leading-none">&times;</button>
+            </div>
+            
+            <div class="overflow-y-auto p-0 flex-grow bg-gray-900/60">
+                <table class="w-full text-left border-collapse text-sm">
+                    <thead class="sticky top-0 bg-gray-800 shadow-md">
+                        <tr class="text-gray-400">
+                            <th class="p-3 font-semibold">日期</th>
+                            <th class="p-3 font-semibold">對戰組合</th>
+                            <th class="p-3 font-semibold text-center">預測球隊</th>
+                            <th class="p-3 font-semibold text-center">信心值</th>
+                            <th class="p-3 font-semibold text-center">賽果</th>
+                        </tr>
+                    </thead>
+                    <tbody id="modal-table-body" class="divide-y divide-gray-800/50">
+                        </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 
     <script>
         // 設定區
@@ -82,18 +118,73 @@
 
         let globalCsvData = [];
 
-        // 分頁切換邏輯
+        // ==========================================
+        // 分頁與 Modal 邏輯
+        // ==========================================
         function switchTab(tabId) {
-            // 切換按鈕樣式
             document.getElementById('btn-picks').className = tabId === 'picks' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
             document.getElementById('btn-stats').className = tabId === 'stats' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
             
-            // 切換內容顯示
             document.getElementById('tab-picks').classList.toggle('hidden', tabId !== 'picks');
             document.getElementById('tab-stats').classList.toggle('hidden', tabId !== 'stats');
         }
 
-        // 載入與解析 CSV
+        function openModal(modelName) {
+            const isKing = KINGS_MODELS.includes(modelName);
+            document.getElementById('modal-title').innerHTML = `${isKing ? '👑' : '🎯'} ${modelName}`;
+            
+            const tbody = document.getElementById('modal-table-body');
+            tbody.innerHTML = ''; // 清空舊資料
+
+            // 1. 過濾出該模型的歷史紀錄，並強制排除「未達信心門檻」的狙擊手雜訊
+            const history = globalCsvData.filter(row => {
+                if (row.Model_Used !== modelName) return false;
+                if (!isKing && row.Confidence_Pct < SNIPER_THRESHOLD) return false;
+                return true;
+            });
+
+            // 2. 依照日期由新到舊排序
+            history.sort((a, b) => new Date(b.Game_Date) - new Date(a.Game_Date));
+
+            // 3. 渲染表格列
+            history.forEach(row => {
+                // 判斷賽事結果與顏色
+                let resultStr = `<span class="text-gray-500 text-xs px-2 py-1 bg-gray-800 rounded">待結算</span>`;
+                if (row.Is_Win !== undefined && row.Is_Win !== null && row.Is_Win !== '') {
+                    if (row.Is_Win == 1 || String(row.Is_Win).toLowerCase() === 'true') {
+                        resultStr = `<span class="text-green-400 font-bold px-2 py-1 bg-green-400/10 rounded">✅ 過盤</span>`;
+                    } else {
+                        resultStr = `<span class="text-red-400 px-2 py-1 bg-red-400/10 rounded">❌ 輸盤</span>`;
+                    }
+                }
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-gray-800/40 transition">
+                        <td class="p-3 text-gray-300">${row.Game_Date}</td>
+                        <td class="p-3 text-gray-400">${row.Matchup}</td>
+                        <td class="p-3 text-center font-bold text-white">${row.Predicted_Winner}</td>
+                        <td class="p-3 text-center text-blue-300">${row.Confidence_Pct}%</td>
+                        <td class="p-3 text-center">${resultStr}</td>
+                    </tr>
+                `;
+            });
+
+            // 顯示 Modal
+            document.getElementById('history-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('history-modal').classList.add('hidden');
+        }
+
+        // 點擊 Modal 背景(黑底)也可關閉視窗
+        document.getElementById('history-modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        // ==========================================
+        // 載入與資料處理
+        // ==========================================
         async function loadPredictions() {
             try {
                 const response = await fetch('data/predictions_history_log.csv');
@@ -118,12 +209,10 @@
             }
         }
 
-        // 處理資料並渲染兩個分頁
         function processData(data) {
             const validData = data.filter(row => row.Game_Date && row.Matchup);
             if (validData.length === 0) return;
             
-            // 找出最新日期
             const dates = [...new Set(validData.map(row => row.Game_Date))].sort();
             const latestDate = dates[dates.length - 1];
             
@@ -142,7 +231,6 @@
             renderStats(validData);
         }
 
-        // 渲染今日預測卡片
         function renderPicks(matchups) {
             const container = document.getElementById('matchups-container');
             container.innerHTML = '';
@@ -206,31 +294,21 @@
             `;
         }
 
-        // 渲染模型戰績表
         function renderStats(allData) {
             const stats = {};
 
-            // 統計每個模型的歷史數據
             allData.forEach(row => {
                 const model = row.Model_Used;
                 if (!stats[model]) {
-                    stats[model] = {
-                        track: row.Track_Name || 'Unknown',
-                        totalBets: 0,
-                        confSum: 0,
-                        gradedBets: 0, // 已開獎注數
-                        wins: 0        // 過盤次數
-                    };
+                    stats[model] = { track: row.Track_Name || 'Unknown', totalBets: 0, confSum: 0, gradedBets: 0, wins: 0 };
                 }
                 
-                // 只有「王者模型」或「信心達標的狙擊手」才算做一次真實下注
                 const isKing = KINGS_MODELS.includes(model);
                 if (isKing || row.Confidence_Pct >= SNIPER_THRESHOLD) {
                     stats[model].totalBets++;
                     stats[model].confSum += row.Confidence_Pct;
 
-                    // 判斷是否有賽後結算欄位 (假設未來你新增了 Is_Win 欄位，1 為贏，0 為輸)
-                    if (row.Is_Win !== undefined && row.Is_Win !== null) {
+                    if (row.Is_Win !== undefined && row.Is_Win !== null && row.Is_Win !== '') {
                         stats[model].gradedBets++;
                         if (row.Is_Win == 1 || String(row.Is_Win).toLowerCase() === 'true') {
                             stats[model].wins++;
@@ -242,35 +320,35 @@
             const tbody = document.getElementById('stats-table-body');
             tbody.innerHTML = '';
 
-            // 將統計物件轉為陣列並依照「下注數」或「勝率」排序
             const sortedModels = Object.keys(stats).map(key => ({ name: key, ...stats[key] }))
                                        .sort((a, b) => b.totalBets - a.totalBets);
 
             sortedModels.forEach(m => {
-                // 若模型沒有任何下注 (都沒達標)，就跳過不顯示
                 if (m.totalBets === 0) return;
 
                 const avgConf = (m.confSum / m.totalBets).toFixed(1);
                 
-                // 計算勝率字串與顏色
-                let winRateStr = `<span class="text-gray-500 text-xs">待結算</span>`;
+                let winRateStr = `<span class="text-gray-500 text-xs px-2 py-1 bg-gray-800 rounded">待結算</span>`;
                 if (m.gradedBets > 0) {
                     const winRate = ((m.wins / m.gradedBets) * 100).toFixed(1);
-                    // 勝率超過 55% 顯示亮綠色，低於 50% 顯示紅色
                     const colorClass = winRate >= 55 ? 'text-green-400 font-bold' : (winRate < 50 ? 'text-red-400' : 'text-gray-300');
                     winRateStr = `<span class="${colorClass}">${winRate}%</span> <span class="text-xs text-gray-500 ml-1">(${m.wins}W-${m.gradedBets - m.wins}L)</span>`;
                 }
 
-                // 王者模型加上專屬標示
                 const isKingIcon = KINGS_MODELS.includes(m.name) ? '👑 ' : '';
 
                 tbody.innerHTML += `
                     <tr class="hover:bg-gray-800/40 transition">
                         <td class="p-4 font-medium text-gray-200">${isKingIcon}${m.name}</td>
-                        <td class="p-4 text-gray-400 text-sm">${m.track}</td>
+                        <td class="p-4 text-gray-400 text-sm hidden md:table-cell">${m.track}</td>
                         <td class="p-4 text-center font-bold text-blue-400">${m.totalBets}</td>
-                        <td class="p-4 text-center text-gray-400">${avgConf}%</td>
+                        <td class="p-4 text-center text-gray-400 hidden sm:table-cell">${avgConf}%</td>
                         <td class="p-4 text-center">${winRateStr}</td>
+                        <td class="p-4 text-center">
+                            <button onclick="openModal('${m.name}')" class="bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded shadow transition-colors">
+                                查看
+                            </button>
+                        </td>
                     </tr>
                 `;
             });
