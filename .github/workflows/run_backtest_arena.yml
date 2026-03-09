@@ -32,10 +32,13 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: 🤖 執行 AI 神聯軍每日預測
+    - name: 🤖 執行 AI 神聯軍每日預測 (讓分盤 + 大小分雙刀流)
       run: |
-        # 直接呼叫預測腳本 (依賴於你管線中已經準備好的最新特徵)
+        # 1. 執行讓分盤 (Spread) 預測與結算
         python src/predict_today.py
+        
+        # 2. 執行大小分 (Over/Under) 預測與結算
+        python src/predict_today_ou.py
 
     - name: 💾 儲存預測結果並推送到 GitHub (觸發網頁更新)
       shell: bash  # 👈 強制使用 bash 確保 git 指令在 Windows 伺服器上也能完美執行
@@ -44,11 +47,14 @@ jobs:
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # 將最新的預測結果加入追蹤
+        # 追蹤讓分盤預測結果
         git add data/predictions_history_log.csv
         
+        # 追蹤大小分預測結果 (新增這行！)
+        git add data/ou_predictions_history_log.csv
+        
         # 執行 Commit。如果當天沒比賽(檔案沒變)，用 || echo 阻止報錯導致 Action 失敗
-        git commit -m "🤖 自動更新：今日 AI 神聯軍預測結果" || echo "今天沒有新的預測結果需要更新"
+        git commit -m "🤖 自動更新：今日 AI 讓分與大小分雙盤預測結果" || echo "今天沒有新的預測結果需要更新"
         
         # 將結果推上 GitHub
         git push
