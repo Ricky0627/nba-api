@@ -1,0 +1,31 @@
+{
+    "name": "OU_100G_Rank1",
+    "track": "100G",
+    "rank": 1,
+    "history_accuracy": 84.62,
+    "num_features": 22,
+    "features": [
+        "AWAY_CHARGES_DRAWN_L5",
+        "AWAY_CHARGES_DRAWN_S2D",
+        "HOME_CONTESTED_SHOTS_L10",
+        "AWAY_CLUTCH_TS_PCT_L5",
+        "HOME_CLUTCH_TS_PCT_L5",
+        "HOME_DEF_RATING_L10",
+        "HOME_EFG_PCT_L3",
+        "HOME_EFG_PCT_L5",
+        "AWAY_MAX_UNANSWERED_RUN_L10",
+        "HOME_MAX_UNANSWERED_RUN_S2D",
+        "AWAY_MOREYBALL_INDEX_L10",
+        "HOME_NET_RATING_L3",
+        "HOME_OFF_RATING_L10",
+        "AWAY_PCT_AST_FGM_L5",
+        "AWAY_PCT_PTS_3PT_L10",
+        "AWAY_PCT_PTS_3PT_L5",
+        "AWAY_Q1_Q3_GAP_L10",
+        "HOME_Q1_Q3_GAP_L3",
+        "AWAY_RIM_FREQ_S2D",
+        "AWAY_RUNS_10_0_COUNT_L10",
+        "HOME_RUNS_10_0_COUNT_L10",
+        "HOME_RUNS_10_0_COUNT_L5"
+    ]
+}

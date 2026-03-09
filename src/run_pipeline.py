@@ -23,12 +23,11 @@ PIPELINE_SCRIPTS = [
     ("生成進階傷病與滾動特徵", "src/generate_injury.py"),
     ("建構機器學習終極大表", "src/build_model_features.py"),
     
-    # 階段五：模型回測與部署
-    ("重新訓練並部署模型", "src/train_deploy.py"),
     
     # 階段六：後續任務
     ("更新賽事資訊", "src/fetch_games.py"),
-    ("預測今日賽事", "src/predict_today.py")
+    ("預測今日賽事", "src/predict_today.py"),
+    ("預測今日大小分", "src/predict_today_ou.py")
 ]
 
 def run_script(description, script_path):

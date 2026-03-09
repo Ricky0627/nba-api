@@ -1,0 +1,22 @@
+{
+    "name": "OU_50G_Rank1",
+    "track": "50G",
+    "rank": 1,
+    "history_accuracy": 92.73,
+    "num_features": 13,
+    "features": [
+        "AWAY_CONTESTED_SHOTS_L10",
+        "AWAY_CLUTCH_TS_PCT_L5",
+        "AWAY_IS_B2B",
+        "HOME_LIVE_TOV_PCT_S2D",
+        "HOME_MAX_UNANSWERED_RUN_L3",
+        "HOME_MAX_UNANSWERED_RUN_S2D",
+        "HOME_MID_FREQ_L5",
+        "HOME_MOREYBALL_INDEX_L5",
+        "AWAY_OFF_RATING_L3",
+        "HOME_PCT_PTS_3PT_S2D",
+        "HOME_PCT_PTS_PAINT_L10",
+        "HOME_RUNS_10_0_COUNT_L3",
+        "HOME_RUNS_10_0_COUNT_L5"
+    ]
+}
