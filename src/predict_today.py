@@ -311,8 +311,16 @@ def predict_upcoming_games():
         }
         
         X_input = {}
-        X_input.update(home_features)
-        X_input.update(away_features)
+        
+        # 🔥 嚴格過濾：主隊只拿 HOME 特徵，客隊只拿 AWAY 特徵
+        for k, v in home_features.items():
+            if k.startswith('HOME_'):
+                X_input[k] = v
+                
+        for k, v in away_features.items():
+            if k.startswith('AWAY_'):
+                X_input[k] = v
+                
         X_input.update(today_context)
         
         print(f"🏀 {matchup_name}")
@@ -342,7 +350,18 @@ def predict_upcoming_games():
             }
             predictions_log.append(prediction_record)
             
-            print(f"   📊 [{m_name:<15} | {stage['track']:<18}] 預測: {predicted_winner:<3} (信心: {round(confidence*100, 2)}%)")
+            # 🔥 視覺化門檻提示 (大於 53% 標示火焰)
+            conf_pct = round(confidence * 100, 2)
+            is_overall = ('OVERALL' in str(stage['track']).upper())
+            
+            if is_overall:
+                action_tag = "👉 [全覆蓋推]"
+            elif conf_pct >= 53.0:
+                action_tag = "🔥 [重注狙擊]"
+            else:
+                action_tag = "👀 [觀望放棄]"
+                
+            print(f"   📊 [{m_name:<15} | {stage['track']:<18}] 預測: {predicted_winner:<3} (信心: {conf_pct:>5}%) {action_tag}")
             
         print("-" * 60)
 
