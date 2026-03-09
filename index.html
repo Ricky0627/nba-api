@@ -128,41 +128,39 @@
 
     <script>
         // 設定區
-        const KINGS_MODELS = ['Overall_Rank1', 'Overall_Rank2', 'Overall_Rank3', 'M014'];
         const SNIPER_THRESHOLD = 53.0;
+
+        // 👑 智慧判斷是否為王者模型
+        function isKingModel(modelName) {
+            const kingsBaseNames = ['Overall_Rank1', 'Overall_Rank2', 'Overall_Rank3', 'M014'];
+            return kingsBaseNames.some(king => String(modelName).includes(king));
+        }
 
         // 資料庫
         let spreadData = [];
         let ouData = [];
-        let currentMode = 'spread'; // 'spread' 或 'ou'
+        let currentMode = 'spread';
 
         // ==========================================
-        // 介面切換邏輯 (Tab & Mode)
+        // 介面切換邏輯
         // ==========================================
         function switchMode(mode) {
             currentMode = mode;
-            
-            // 變更按鈕顏色
             document.getElementById('mode-spread').className = mode === 'spread' ? 'mode-btn mode-active px-6 py-1.5 rounded-md font-bold text-sm tracking-wide' : 'mode-btn mode-inactive px-6 py-1.5 rounded-md font-bold text-sm tracking-wide';
             document.getElementById('mode-ou').className = mode === 'ou' ? 'mode-btn mode-active px-6 py-1.5 rounded-md font-bold text-sm tracking-wide' : 'mode-btn mode-inactive px-6 py-1.5 rounded-md font-bold text-sm tracking-wide';
-            
-            // 更換表頭文字
             document.getElementById('win-rate-header').innerText = mode === 'spread' ? '過盤勝率 (ATS)' : '過盤勝率 (O/U)';
-
-            // 重新渲染畫面 (讀取對應的資料陣列)
             processData(currentMode === 'spread' ? spreadData : ouData);
         }
 
         function switchTab(tabId) {
             document.getElementById('btn-picks').className = tabId === 'picks' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
             document.getElementById('btn-stats').className = tabId === 'stats' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
-            
             document.getElementById('tab-picks').classList.toggle('hidden', tabId !== 'picks');
             document.getElementById('tab-stats').classList.toggle('hidden', tabId !== 'stats');
         }
 
         // ==========================================
-        // 載入與資料處理 (雙檔同時讀取)
+        // 載入與資料處理
         // ==========================================
         async function fetchCsvData(url) {
             try {
@@ -176,18 +174,15 @@
                     });
                 });
             } catch (e) {
-                console.error(`讀取 ${url} 失敗:`, e);
                 return [];
             }
         }
 
         async function loadAllPredictions() {
-            // 同時抓取讓分盤與大小分 CSV
             const [spreadResult, ouResult] = await Promise.all([
                 fetchCsvData('data/predictions_history_log.csv'),
                 fetchCsvData('data/ou_predictions_history_log.csv')
             ]);
-
             spreadData = spreadResult;
             ouData = ouResult;
 
@@ -198,8 +193,6 @@
                     </div>`;
                 return;
             }
-
-            // 初始化畫面
             switchMode('spread');
         }
 
@@ -216,10 +209,8 @@
             
             const dates = [...new Set(validData.map(row => row.Game_Date))].sort();
             const latestDate = dates[dates.length - 1];
-            
             document.getElementById('date-display').innerText = `📅 最新預測：${latestDate}`;
 
-            // --- 渲染今日賽事 ---
             const todayData = validData.filter(row => row.Game_Date === latestDate);
             const matchups = {};
             todayData.forEach(row => {
@@ -227,13 +218,11 @@
                 matchups[row.Matchup].push(row);
             });
             renderPicks(matchups);
-
-            // --- 渲染歷史戰績 ---
             renderStats(validData);
         }
 
         // ==========================================
-        // 渲染卡片邏輯 (自動相容大小分稱呼)
+        // 渲染今日預測卡片
         // ==========================================
         function renderPicks(matchups) {
             const container = document.getElementById('matchups-container');
@@ -244,31 +233,25 @@
                 if (teams.length !== 2) continue;
                 const awayTeam = teams[0], homeTeam = teams[1];
 
-                // 決定左右兩框的標題
                 let leftLabel = currentMode === 'spread' ? awayTeam : '大分 (OVER)';
                 let rightLabel = currentMode === 'spread' ? homeTeam : '小分 (UNDER)';
-
                 const teamTags = { [leftLabel]: { kings: [], snipers: [] }, [rightLabel]: { kings: [], snipers: [] } };
 
                 predictions.forEach(p => {
                     let winner = String(p.Predicted_Winner).trim();
                     let targetBox;
 
-                    // 智慧分類邏輯 (確保 O/U 跟 Spread 都能放對位置)
                     if (currentMode === 'ou') {
                         let wUp = winner.toUpperCase();
-                        if (wUp.includes('大') || wUp.includes('OVER') || wUp === 'O' || wUp === homeTeam.toUpperCase()) {
-                            targetBox = leftLabel; // 大分框
-                        } else {
-                            targetBox = rightLabel; // 小分框
-                        }
+                        if (wUp.includes('大') || wUp.includes('OVER') || wUp === 'O' || wUp === homeTeam.toUpperCase()) targetBox = leftLabel;
+                        else targetBox = rightLabel;
                     } else {
                         targetBox = (winner.toUpperCase() === awayTeam.toUpperCase()) ? leftLabel : rightLabel;
                     }
 
                     if (!teamTags[targetBox]) teamTags[targetBox] = { kings: [], snipers: [] };
 
-                    if (KINGS_MODELS.includes(p.Model_Used)) {
+                    if (isKingModel(p.Model_Used)) {
                         teamTags[targetBox].kings.push(p);
                     } else if (p.Confidence_Pct >= SNIPER_THRESHOLD) {
                         teamTags[targetBox].snipers.push(p);
@@ -295,7 +278,10 @@
             const bgColor = isRight ? 'bg-gray-800/50' : 'bg-gray-800/30';
             const titleColor = currentMode === 'ou' ? (isRight ? 'text-purple-300' : 'text-pink-300') : (isRight ? 'text-blue-300' : 'text-gray-300');
             
-            let kingsHTML = tags.kings.map(t => `<span class="tag-king px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block mb-1">👑 ${t.Model_Used} (${t.Confidence_Pct}%)</span>`).join(' ');
+            // 🔥 在這裡拿掉王者的 Confidence_Pct 顯示！
+            let kingsHTML = tags.kings.map(t => `<span class="tag-king px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block mb-1">👑 ${t.Model_Used}</span>`).join(' ');
+            
+            // 狙擊手依然保留信心值
             let snipersHTML = tags.snipers.map(t => `<span class="tag-sniper px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block mb-1">🎯 ${t.Model_Used} (${t.Confidence_Pct}%)</span>`).join(' ');
 
             if (!kingsHTML) kingsHTML = `<span class="text-xs text-gray-600 italic">無推薦</span>`;
@@ -316,6 +302,9 @@
             `;
         }
 
+        // ==========================================
+        // 渲染模型戰績表
+        // ==========================================
         function renderStats(allData) {
             const stats = {};
             allData.forEach(row => {
@@ -324,7 +313,8 @@
                     stats[model] = { track: row.Track_Name || 'Unknown', totalBets: 0, confSum: 0, gradedBets: 0, wins: 0 };
                 }
                 
-                if (KINGS_MODELS.includes(model) || row.Confidence_Pct >= SNIPER_THRESHOLD) {
+                const isKing = isKingModel(model);
+                if (isKing || row.Confidence_Pct >= SNIPER_THRESHOLD) {
                     stats[model].totalBets++;
                     stats[model].confSum += row.Confidence_Pct;
 
@@ -344,7 +334,10 @@
 
             sortedModels.forEach(m => {
                 if (m.totalBets === 0) return;
-                const avgConf = (m.confSum / m.totalBets).toFixed(1);
+                const isKing = isKingModel(m.name);
+                
+                // 🔥 如果是王者模型，表格內的平均信心直接顯示 "-"
+                const avgConfDisplay = isKing ? '<span class="text-gray-600">-</span>' : `${(m.confSum / m.totalBets).toFixed(1)}%`;
                 
                 let winRateStr = `<span class="text-gray-500 text-xs px-2 py-1 bg-gray-800 rounded">待結算</span>`;
                 if (m.gradedBets > 0) {
@@ -353,13 +346,13 @@
                     winRateStr = `<span class="${colorClass}">${winRate}%</span> <span class="text-xs text-gray-500 ml-1">(${m.wins}W-${m.gradedBets - m.wins}L)</span>`;
                 }
 
-                const isKingIcon = KINGS_MODELS.includes(m.name) ? '👑 ' : '';
+                const isKingIcon = isKing ? '👑 ' : '';
                 tbody.innerHTML += `
                     <tr class="hover:bg-gray-800/40 transition">
                         <td class="p-4 font-medium text-gray-200">${isKingIcon}${m.name}</td>
                         <td class="p-4 text-gray-400 text-sm hidden md:table-cell">${m.track}</td>
                         <td class="p-4 text-center font-bold text-blue-400">${m.totalBets}</td>
-                        <td class="p-4 text-center text-gray-400 hidden sm:table-cell">${avgConf}%</td>
+                        <td class="p-4 text-center text-gray-400 hidden sm:table-cell">${avgConfDisplay}</td>
                         <td class="p-4 text-center">${winRateStr}</td>
                         <td class="p-4 text-center">
                             <button onclick="openModal('${m.name}')" class="${currentMode === 'spread' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-purple-600 hover:bg-purple-500'} text-white text-xs px-3 py-1.5 rounded shadow transition-colors">
@@ -375,7 +368,7 @@
         // Modal 歷史明細邏輯
         // ==========================================
         function openModal(modelName) {
-            const isKing = KINGS_MODELS.includes(modelName);
+            const isKing = isKingModel(modelName);
             document.getElementById('modal-title').innerHTML = `${isKing ? '👑' : '🎯'} ${modelName} <span class="text-sm ml-2 font-normal text-gray-400">(${currentMode === 'spread' ? '讓分盤' : '大小分'})</span>`;
             
             const tbody = document.getElementById('modal-table-body');
@@ -398,20 +391,22 @@
                         : `<span class="text-red-400 px-2 py-1 bg-red-400/10 rounded">❌ 輸盤</span>`;
                 }
                 
-                // 大小分標示優化
                 let printedWinner = row.Predicted_Winner;
                 if (currentMode === 'ou') {
                     let wUp = String(printedWinner).toUpperCase();
-                    if (wUp === '1' || wUp === 'OVER' || wUp === '大分') printedWinner = '<span class="text-pink-400 font-bold">大分 (OVER)</span>';
-                    else if (wUp === '0' || wUp === 'UNDER' || wUp === '小分') printedWinner = '<span class="text-purple-400 font-bold">小分 (UNDER)</span>';
+                    if (wUp === '1' || wUp === 'OVER' || wUp === '大分' || wUp === 'O') printedWinner = '<span class="text-pink-400 font-bold">大分 (OVER)</span>';
+                    else if (wUp === '0' || wUp === 'UNDER' || wUp === '小分' || wUp === 'U') printedWinner = '<span class="text-purple-400 font-bold">小分 (UNDER)</span>';
                 }
+
+                // 🔥 如果是王者模型，彈窗內的信心值也顯示 "-"
+                const confDisplay = isKing ? '<span class="text-gray-600">-</span>' : `${row.Confidence_Pct}%`;
 
                 tbody.innerHTML += `
                     <tr class="hover:bg-gray-800/40 transition">
                         <td class="p-3 text-gray-300">${row.Game_Date}</td>
                         <td class="p-3 text-gray-400">${row.Matchup}</td>
                         <td class="p-3 text-center font-bold text-white">${printedWinner}</td>
-                        <td class="p-3 text-center text-blue-300">${row.Confidence_Pct}%</td>
+                        <td class="p-3 text-center text-blue-300">${confDisplay}</td>
                         <td class="p-3 text-center">${resultStr}</td>
                     </tr>
                 `;
