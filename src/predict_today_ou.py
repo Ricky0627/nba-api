@@ -232,8 +232,16 @@ def predict_upcoming_games():
         }
         
         X_input = {}
-        X_input.update(home_features)
-        X_input.update(away_features)
+        
+        # 🔥 嚴格過濾：主隊只拿 HOME 特徵，客隊只拿 AWAY 特徵
+        for k, v in home_features.items():
+            if k.startswith('HOME_'):
+                X_input[k] = v
+                
+        for k, v in away_features.items():
+            if k.startswith('AWAY_'):
+                X_input[k] = v
+                
         X_input.update(today_context)
         
         print(f"🏀 {matchup_name}")
