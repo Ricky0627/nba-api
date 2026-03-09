@@ -11,12 +11,18 @@
         .tag-king { background-color: rgba(234, 179, 8, 0.15); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4); }
         .tag-sniper { background-color: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); }
         .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); }
+        
+        /* 分頁按鈕特效 */
+        .tab-btn { transition: all 0.3s ease; }
+        .tab-active { border-bottom: 2px solid #60a5fa; color: #60a5fa; font-weight: bold; }
+        .tab-inactive { color: #9ca3af; border-bottom: 2px solid transparent; }
+        .tab-inactive:hover { color: #d1d5db; } /* 正確的 CSS 滑鼠懸停寫法 */
     </style>
 </head>
 <body class="text-gray-200 font-sans min-h-screen pb-10">
 
     <nav class="border-b border-gray-800 bg-gray-900/50 sticky top-0 z-50 backdrop-blur-md">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
             <h1 class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
                 🏀 NBA 神聯軍 AI 預測
             </h1>
@@ -26,28 +32,70 @@
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        <p class="text-gray-400 mb-8 text-center text-sm md:text-base">
-            <span class="text-yellow-400 font-bold">👑 絕對王者</span>：硬猜勝率 >61%，無腦跟單指標<br class="md:hidden">
-            <span class="text-red-400 font-bold ml-0 md:ml-4">🎯 狙擊標籤</span>：其餘模型信心值大於 53% 才會觸發
-        </p>
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+        
+        <div class="flex space-x-6 border-b border-gray-800 mb-8">
+            <button onclick="switchTab('picks')" id="btn-picks" class="tab-btn tab-active pb-3 text-lg">🎯 今日預測</button>
+            <button onclick="switchTab('stats')" id="btn-stats" class="tab-btn tab-inactive pb-3 text-lg">📊 模型戰績排行榜</button>
+        </div>
 
-        <div id="matchups-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div class="col-span-full text-center py-20 text-gray-500 animate-pulse">
-                讀取最新 AI 預測數據中...
+        <div id="tab-picks">
+            <p class="text-gray-400 mb-6 text-center text-sm md:text-base">
+                <span class="text-yellow-400 font-bold">👑 絕對王者</span>：硬猜勝率 >61%，無腦跟單指標<br class="md:hidden">
+                <span class="text-red-400 font-bold ml-0 md:ml-4">🎯 狙擊標籤</span>：其餘模型信心值大於 53% 才會觸發
+            </p>
+
+            <div id="matchups-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="col-span-full text-center py-20 text-gray-500 animate-pulse">讀取最新 AI 數據中...</div>
             </div>
         </div>
+
+        <div id="tab-stats" class="hidden">
+            <div class="glass-panel rounded-2xl overflow-hidden shadow-xl">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-gray-800/80 text-gray-300 text-sm uppercase tracking-wider">
+                                <th class="p-4 font-bold border-b border-gray-700">模型名稱</th>
+                                <th class="p-4 font-bold border-b border-gray-700">所屬賽道</th>
+                                <th class="p-4 font-bold border-b border-gray-700 text-center">總下注數</th>
+                                <th class="p-4 font-bold border-b border-gray-700 text-center">平均信心</th>
+                                <th class="p-4 font-bold border-b border-gray-700 text-center text-green-400">過盤勝率 (ATS)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stats-table-body" class="divide-y divide-gray-800/50">
+                            </tbody>
+                    </table>
+                </div>
+                <div class="p-4 bg-gray-900/50 text-xs text-gray-500 text-center">
+                    💡 註：過盤勝率 (ATS) 需要系統進行賽後對獎。若目前顯示「待結算」，表示歷史資料庫中尚無比賽真實結果。
+                </div>
+            </div>
+        </div>
+
     </main>
 
     <script>
-        // 定義絕對王者模型名單
+        // 設定區
         const KINGS_MODELS = ['Overall_Rank1', 'Overall_Rank2', 'Overall_Rank3', 'M014'];
-        const SNIPER_THRESHOLD = 53.0; // 狙擊手觸發門檻
+        const SNIPER_THRESHOLD = 53.0;
+
+        let globalCsvData = [];
+
+        // 分頁切換邏輯
+        function switchTab(tabId) {
+            // 切換按鈕樣式
+            document.getElementById('btn-picks').className = tabId === 'picks' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
+            document.getElementById('btn-stats').className = tabId === 'stats' ? 'tab-btn tab-active pb-3 text-lg' : 'tab-btn tab-inactive pb-3 text-lg';
+            
+            // 切換內容顯示
+            document.getElementById('tab-picks').classList.toggle('hidden', tabId !== 'picks');
+            document.getElementById('tab-stats').classList.toggle('hidden', tabId !== 'stats');
+        }
 
         // 載入與解析 CSV
         async function loadPredictions() {
             try {
-                // 讀取 GitHub Pages 上同個 Repo 裡的 CSV 檔案
                 const response = await fetch('data/predictions_history_log.csv');
                 if (!response.ok) throw new Error('無法讀取預測檔案');
                 
@@ -58,136 +106,174 @@
                     dynamicTyping: true,
                     skipEmptyLines: true,
                     complete: function(results) {
-                        processData(results.data);
+                        globalCsvData = results.data;
+                        processData(globalCsvData);
                     }
                 });
             } catch (error) {
                 document.getElementById('matchups-container').innerHTML = `
                     <div class="col-span-full text-center py-20 text-red-400 font-bold">
-                        ❌ 載入失敗：找不到資料或網路錯誤。<br><span class="text-sm text-gray-500">${error.message}</span>
+                        ❌ 載入失敗：找不到資料。<br><span class="text-sm text-gray-500">${error.message}</span>
                     </div>`;
             }
         }
 
-        // 處理並過濾資料
+        // 處理資料並渲染兩個分頁
         function processData(data) {
-            // 找出 CSV 中最新的比賽日期 (Game_Date)
-            const dates = data.map(row => row.Game_Date).filter(d => d);
-            if (dates.length === 0) return;
+            const validData = data.filter(row => row.Game_Date && row.Matchup);
+            if (validData.length === 0) return;
             
-            // 排序取得最新日期
-            dates.sort();
+            // 找出最新日期
+            const dates = [...new Set(validData.map(row => row.Game_Date))].sort();
             const latestDate = dates[dates.length - 1];
             
-            document.getElementById('date-display').innerText = `📅 賽事日期：${latestDate}`;
+            document.getElementById('date-display').innerText = `📅 最新預測：${latestDate}`;
 
-            // 只保留最新日期的預測
-            const todayData = data.filter(row => row.Game_Date === latestDate);
-
-            // 將資料按對戰組合 (Matchup) 進行分組
+            // --- 渲染分頁 1：今日賽事 ---
+            const todayData = validData.filter(row => row.Game_Date === latestDate);
             const matchups = {};
             todayData.forEach(row => {
                 if (!matchups[row.Matchup]) matchups[row.Matchup] = [];
                 matchups[row.Matchup].push(row);
             });
+            renderPicks(matchups);
 
-            renderDashboard(matchups);
+            // --- 渲染分頁 2：歷史戰績 ---
+            renderStats(validData);
         }
 
-        // 渲染網頁畫面
-        function renderDashboard(matchups) {
+        // 渲染今日預測卡片
+        function renderPicks(matchups) {
             const container = document.getElementById('matchups-container');
-            container.innerHTML = ''; // 清空載入中提示
+            container.innerHTML = '';
 
             for (const [matchupStr, predictions] of Object.entries(matchups)) {
-                // 解析主客隊 (假設格式為 "AWAY @ HOME")
                 const teams = matchupStr.split('@').map(t => t.trim());
                 if (teams.length !== 2) continue;
-                const awayTeam = teams[0];
-                const homeTeam = teams[1];
+                const awayTeam = teams[0], homeTeam = teams[1];
 
-                // 分類兩個隊伍獲得的標籤
-                const teamTags = {
-                    [awayTeam]: { kings: [], snipers: [] },
-                    [homeTeam]: { kings: [], snipers: [] }
-                };
+                const teamTags = { [awayTeam]: { kings: [], snipers: [] }, [homeTeam]: { kings: [], snipers: [] } };
 
                 predictions.forEach(p => {
                     const winner = p.Predicted_Winner;
-                    const isKing = KINGS_MODELS.includes(p.Model_Used);
-                    
-                    if (!teamTags[winner]) return; // 防呆
+                    if (!teamTags[winner]) return;
 
-                    if (isKing) {
-                        // 王者無條件上榜
+                    if (KINGS_MODELS.includes(p.Model_Used)) {
                         teamTags[winner].kings.push(p);
                     } else if (p.Confidence_Pct >= SNIPER_THRESHOLD) {
-                        // 其他模型需達到信心門檻
                         teamTags[winner].snipers.push(p);
                     }
                 });
 
-                // 產生卡片 HTML
-                const cardHTML = `
+                container.innerHTML += `
                     <div class="glass-panel rounded-2xl p-5 shadow-xl transition transform hover:-translate-y-1 hover:shadow-2xl">
                         <div class="flex justify-center items-center mb-6">
                             <div class="text-xl font-black tracking-wider text-gray-300">${awayTeam}</div>
                             <div class="mx-4 text-sm font-bold text-gray-500 bg-gray-800 px-3 py-1 rounded-full">@</div>
                             <div class="text-xl font-black tracking-wider text-white">${homeTeam}</div>
                         </div>
-
                         <div class="grid grid-cols-2 gap-4">
                             ${generateTeamSectionHTML(awayTeam, teamTags[awayTeam])}
-                            
                             ${generateTeamSectionHTML(homeTeam, teamTags[homeTeam], true)}
                         </div>
                     </div>
                 `;
-                container.innerHTML += cardHTML;
             }
         }
 
-        // 產生單一隊伍的標籤區塊 HTML
         function generateTeamSectionHTML(teamName, tags, isHome = false) {
             const bgColor = isHome ? 'bg-gray-800/50' : 'bg-gray-800/30';
             const titleColor = isHome ? 'text-blue-300' : 'text-gray-300';
             
-            let kingsHTML = tags.kings.map(t => 
-                `<span class="tag-king px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block">
-                    👑 ${t.Model_Used} (${t.Confidence_Pct}%)
-                </span>`
-            ).join('');
-            
-            let snipersHTML = tags.snipers.map(t => 
-                `<span class="tag-sniper px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block">
-                    🎯 ${t.Model_Used} (${t.Confidence_Pct}%)
-                </span>`
-            ).join('');
+            let kingsHTML = tags.kings.map(t => `<span class="tag-king px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block mb-1">👑 ${t.Model_Used} (${t.Confidence_Pct}%)</span>`).join(' ');
+            let snipersHTML = tags.snipers.map(t => `<span class="tag-sniper px-2.5 py-1 rounded-md text-xs font-semibold shadow-sm inline-block mb-1">🎯 ${t.Model_Used} (${t.Confidence_Pct}%)</span>`).join(' ');
 
             if (!kingsHTML) kingsHTML = `<span class="text-xs text-gray-600 italic">無推薦</span>`;
-            if (!snipersHTML) snipersHTML = `<span class="text-xs text-gray-600 italic">無觸發</span>`;
+            if (!snipersHTML) snipersHTML = `<span class="text-xs text-gray-600 italic">未達信心門檻</span>`;
 
             return `
                 <div class="${bgColor} rounded-xl p-4 border border-gray-700/50">
-                    <h3 class="text-lg font-bold ${titleColor} text-center border-b border-gray-700 pb-2 mb-3">
-                        ${teamName}
-                    </h3>
-                    
+                    <h3 class="text-lg font-bold ${titleColor} text-center border-b border-gray-700 pb-2 mb-3">${teamName}</h3>
                     <div class="mb-4">
                         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">絕對王者推薦</div>
-                        <div class="flex flex-wrap gap-1.5">
-                            ${kingsHTML}
-                        </div>
+                        <div class="flex flex-wrap gap-1">${kingsHTML}</div>
                     </div>
-                    
                     <div>
                         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">重砲狙擊 (>53%)</div>
-                        <div class="flex flex-wrap gap-1.5">
-                            ${snipersHTML}
-                        </div>
+                        <div class="flex flex-wrap gap-1">${snipersHTML}</div>
                     </div>
                 </div>
             `;
+        }
+
+        // 渲染模型戰績表
+        function renderStats(allData) {
+            const stats = {};
+
+            // 統計每個模型的歷史數據
+            allData.forEach(row => {
+                const model = row.Model_Used;
+                if (!stats[model]) {
+                    stats[model] = {
+                        track: row.Track_Name || 'Unknown',
+                        totalBets: 0,
+                        confSum: 0,
+                        gradedBets: 0, // 已開獎注數
+                        wins: 0        // 過盤次數
+                    };
+                }
+                
+                // 只有「王者模型」或「信心達標的狙擊手」才算做一次真實下注
+                const isKing = KINGS_MODELS.includes(model);
+                if (isKing || row.Confidence_Pct >= SNIPER_THRESHOLD) {
+                    stats[model].totalBets++;
+                    stats[model].confSum += row.Confidence_Pct;
+
+                    // 判斷是否有賽後結算欄位 (假設未來你新增了 Is_Win 欄位，1 為贏，0 為輸)
+                    if (row.Is_Win !== undefined && row.Is_Win !== null) {
+                        stats[model].gradedBets++;
+                        if (row.Is_Win == 1 || String(row.Is_Win).toLowerCase() === 'true') {
+                            stats[model].wins++;
+                        }
+                    }
+                }
+            });
+
+            const tbody = document.getElementById('stats-table-body');
+            tbody.innerHTML = '';
+
+            // 將統計物件轉為陣列並依照「下注數」或「勝率」排序
+            const sortedModels = Object.keys(stats).map(key => ({ name: key, ...stats[key] }))
+                                       .sort((a, b) => b.totalBets - a.totalBets);
+
+            sortedModels.forEach(m => {
+                // 若模型沒有任何下注 (都沒達標)，就跳過不顯示
+                if (m.totalBets === 0) return;
+
+                const avgConf = (m.confSum / m.totalBets).toFixed(1);
+                
+                // 計算勝率字串與顏色
+                let winRateStr = `<span class="text-gray-500 text-xs">待結算</span>`;
+                if (m.gradedBets > 0) {
+                    const winRate = ((m.wins / m.gradedBets) * 100).toFixed(1);
+                    // 勝率超過 55% 顯示亮綠色，低於 50% 顯示紅色
+                    const colorClass = winRate >= 55 ? 'text-green-400 font-bold' : (winRate < 50 ? 'text-red-400' : 'text-gray-300');
+                    winRateStr = `<span class="${colorClass}">${winRate}%</span> <span class="text-xs text-gray-500 ml-1">(${m.wins}W-${m.gradedBets - m.wins}L)</span>`;
+                }
+
+                // 王者模型加上專屬標示
+                const isKingIcon = KINGS_MODELS.includes(m.name) ? '👑 ' : '';
+
+                tbody.innerHTML += `
+                    <tr class="hover:bg-gray-800/40 transition">
+                        <td class="p-4 font-medium text-gray-200">${isKingIcon}${m.name}</td>
+                        <td class="p-4 text-gray-400 text-sm">${m.track}</td>
+                        <td class="p-4 text-center font-bold text-blue-400">${m.totalBets}</td>
+                        <td class="p-4 text-center text-gray-400">${avgConf}%</td>
+                        <td class="p-4 text-center">${winRateStr}</td>
+                    </tr>
+                `;
+            });
         }
 
         // 啟動程式
