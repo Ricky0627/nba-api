@@ -162,28 +162,38 @@ def settle_past_predictions():
             games_df = pd.read_sql("SELECT * FROM games", conn)
             conn.close()
             
+            # 🔥 防呆 1：強制將資料庫欄位轉小寫，避免 KeyError
+            games_df.columns = [c.lower() for c in games_df.columns]
+            
             # 統一日期格式
-            games_df['DATE_STR'] = pd.to_datetime(games_df['game_date']).dt.strftime('%Y-%m-%d')
+            games_df['date_str'] = pd.to_datetime(games_df['game_date']).dt.strftime('%Y-%m-%d')
             
             for _, row in games_df.iterrows():
                 matchup = f"{row['away_team']} @ {row['home_team']}"
-                key = f"{matchup}_{row['DATE_STR']}"
-                
-                home_score = pd.to_numeric(row.get('home_score'), errors='coerce')
-                away_score = pd.to_numeric(row.get('away_score'), errors='coerce')
-                tw_spread = row.get('tw_spread')
+                key = f"{matchup}_{row['date_str']}"
                 
                 spread_winner = None
-                if pd.notna(home_score) and pd.notna(away_score) and pd.notna(tw_spread):
-                    # 計算讓分盤勝負
-                    if (home_score - away_score + float(tw_spread)) > 0:
-                        spread_winner = row['home_team']
-                    else:
-                        spread_winner = row['away_team']
+                try:
+                    # 🔥 防呆 2：安全轉換數字，避免空字串轉 float 崩潰
+                    home_score = float(row.get('home_score', 0))
+                    away_score = float(row.get('away_score', 0))
+                    tw_spread = float(row.get('tw_spread_score', 0)) 
+                    
+                    if home_score > 0 and away_score > 0:
+                        diff = home_score - away_score + tw_spread
+                        # 🔥 防呆 3：正確處理走水 (剛好等於0) 以及客隊過盤
+                        if diff > 0:
+                            spread_winner = row['home_team']
+                        elif diff < 0:
+                            spread_winner = row['away_team']
+                        else:
+                            spread_winner = None # 走水不計勝負
+                except Exception:
+                    pass
 
                 actual_results[key] = {
                     'spread_winner': spread_winner,
-                    'spread_line': tw_spread
+                    'spread_line': row.get('tw_spread_score') # 確保這裡也用 tw_spread_score
                 }
         except Exception as e:
             print(f"   ⚠️ 讀取資料庫 games 表格時發生錯誤: {e}")
@@ -355,8 +365,19 @@ def predict_upcoming_games():
             X_model_dict = {f: X_input.get(f, 0) for f in features_list}
             X_df = pd.DataFrame([X_model_dict])[features_list].astype('float32')
             
-            prob = models[m_name].predict_proba(X_df)[0]
-            home_win_prob = prob[1]
+            model_obj = models[m_name]
+            prob = model_obj.predict_proba(X_df)[0]
+            
+            # 🔥 防呆 4：動態尋找主隊或1的索引，避免 XGBoost 字母排序反轉
+            classes = list(model_obj.classes_)
+            if home_team in classes:
+                home_idx = classes.index(home_team)
+            elif 1 in classes:
+                home_idx = classes.index(1)
+            else:
+                home_idx = 1 # Fallback
+                
+            home_win_prob = prob[home_idx]
             confidence = max(prob[0], prob[1])
             predicted_winner = home_team if home_win_prob >= 0.5 else away_team
             

@@ -77,6 +77,9 @@ def settle_past_predictions():
             games_df = pd.read_sql("SELECT * FROM games", conn)
             conn.close()
             
+            # 🔥 防呆 1：強制將資料庫欄位轉小寫，避免 KeyError
+            games_df.columns = [c.lower() for c in games_df.columns]
+            
             # 統一日期格式
             games_df['DATE_STR'] = pd.to_datetime(games_df['game_date']).dt.strftime('%Y-%m-%d')
             
@@ -84,21 +87,30 @@ def settle_past_predictions():
                 matchup = f"{row['away_team']} @ {row['home_team']}"
                 key = f"{matchup}_{row['DATE_STR']}"
                 
-                # 抓取分數與盤口
-                home_score = pd.to_numeric(row.get('home_score'), errors='coerce')
-                away_score = pd.to_numeric(row.get('away_score'), errors='coerce')
-                tw_total = row.get('tw_total')
-                
-                # 計算大小分賽果
                 ou_winner = None
-                if pd.notna(home_score) and pd.notna(away_score) and pd.notna(tw_total):
-                    total_pts = home_score + away_score
-                    if total_pts > float(tw_total): ou_winner = 'OVER'
-                    elif total_pts < float(tw_total): ou_winner = 'UNDER'
+                try:
+                    # 🔥 防呆 2：安全轉換數字，避免空字串轉 float 崩潰
+                    home_score = float(row.get('home_score', 0))
+                    away_score = float(row.get('away_score', 0))
+                    # 👇 依指示將資料庫欄位精準改為 tw_total_score
+                    tw_total = float(row.get('tw_total_score', 0))
+                    
+                    if home_score > 0 and away_score > 0 and tw_total > 0:
+                        total_pts = home_score + away_score
+                        # 🔥 防呆 3：正確處理走水 (剛好等於盤口)
+                        if total_pts > tw_total:
+                            ou_winner = 'OVER'
+                        elif total_pts < tw_total:
+                            ou_winner = 'UNDER'
+                        else:
+                            ou_winner = None # 走水不計勝負
+                except Exception:
+                    pass
 
                 actual_results[key] = {
                     'ou_winner': ou_winner,
-                    'ou_line': tw_total
+                    # 👇 回填時也確保抓取正確的 tw_total_score
+                    'ou_line': row.get('tw_total_score')
                 }
         except Exception as e:
             print(f"   ⚠️ 讀取資料庫 games 表格時發生錯誤: {e}")
@@ -209,7 +221,6 @@ def predict_upcoming_games():
     models = {}
     for stage in ALL_MODELS:
         m_name = stage['name']
-        # 注意：這裡假設你將 XGBoost 的 weights 存成了 m_name + '.json'
         model_path = os.path.join(MODEL_DIR, f"{m_name}.json") 
         if os.path.exists(model_path):
             model = XGBClassifier()
@@ -275,10 +286,19 @@ def predict_upcoming_games():
             X_model_dict = {f: X_input.get(f, 0) for f in features_list}
             X_df = pd.DataFrame([X_model_dict])[features_list].astype('float32')
             
-            prob = models[m_name].predict_proba(X_df)[0]
+            model_obj = models[m_name]
+            prob = model_obj.predict_proba(X_df)[0]
             
-            # 🔥 大小分邏輯：prob[1] 是 OVER(大分) 的機率，prob[0] 是 UNDER(小分) 的機率
-            prob_over = prob[1]
+            # 🔥 防呆 4：動態尋找 OVER 或 1 的索引，避免 XGBoost 字母排序反轉
+            classes = list(model_obj.classes_)
+            if 'OVER' in classes:
+                over_idx = classes.index('OVER')
+            elif 1 in classes:
+                over_idx = classes.index(1)
+            else:
+                over_idx = 1 # Fallback
+            
+            prob_over = prob[over_idx]
             confidence = max(prob[0], prob[1])
             predicted_ou = "OVER" if prob_over >= 0.5 else "UNDER"
             
