@@ -221,6 +221,7 @@ def predict_upcoming_games():
     models = {}
     for stage in ALL_MODELS:
         m_name = stage['name']
+        # 注意：這裡假設你將 XGBoost 的 weights 存成了 m_name + '.json'
         model_path = os.path.join(MODEL_DIR, f"{m_name}.json") 
         if os.path.exists(model_path):
             model = XGBClassifier()
@@ -239,28 +240,32 @@ def predict_upcoming_games():
     print(f"\n🎯 今日共有 {len(upcoming_df)} 場賽事，開始進行大小分全面分析...\n" + "="*60)
     
     for _, row in upcoming_df.iterrows():
-        home_team = row['home_team']
-        away_team = row['away_team']
-        game_date = row['game_date']
+        # 🔥 強制將欄位名稱去空白並轉大寫 (防禦隱形空白殺手)
+        row_upper = {str(k).strip().upper(): v for k, v in row.items()}
+        
+        home_team = row_upper.get('HOME_TEAM')
+        away_team = row_upper.get('AWAY_TEAM')
+        game_date = row_upper.get('GAME_DATE')
         matchup_name = f"{away_team} @ {home_team}"
         
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
-        # 🎯 新增：抓取今日大小分盤口數字
-        # 將 row 的欄位名稱全部轉大寫，完美迴避大小寫不一致的問題
-        row_upper = {str(k).upper(): v for k, v in row.items()}
-        
-        # 🎯 精準抓取今日大小分盤口數字 (絕對不從 home_features 拿歷史數據)
-        game_line = row_upper.get('TW_TOTAL', row_upper.get('TW_TOTAL_SCORE', row_upper.get('TW_OU_SCORE', '未開盤')))
-        if pd.isna(game_line) or str(game_line).strip() == '':
-            game_line = '未開盤'
+        # 🎯 擴大搜尋範圍，精準抓取維加斯大小分盤口 VEGAS_TOTAL
+        possible_ou_cols = ['VEGAS_TOTAL', 'TW_TOTAL_SCORE', 'TW_TOTAL', 'TW_OU_SCORE', 'TOTAL']
+        game_line = '未開盤'
+        for col in possible_ou_cols:
+            if col in row_upper:
+                val = row_upper[col]
+                if pd.notna(val) and str(val).strip() not in ['', 'nan', 'NaN', 'None']:
+                    game_line = str(val).strip()
+                    break
 
         today_context = {
-            "HOME_IS_B2B": 1 if row.get('home_is_b2b', False) else 0,
-            "AWAY_IS_B2B": 1 if row.get('away_is_b2b', False) else 0,
-            "HOME_REST_DAYS": row.get('home_rest_days', 2), 
-            "AWAY_REST_DAYS": row.get('away_rest_days', 2)
+            "HOME_IS_B2B": 1 if str(row_upper.get('HOME_IS_B2B', 'False')).strip().lower() == 'true' else 0,
+            "AWAY_IS_B2B": 1 if str(row_upper.get('AWAY_IS_B2B', 'False')).strip().lower() == 'true' else 0,
+            "HOME_REST_DAYS": row_upper.get('HOME_REST_DAYS', 2), 
+            "AWAY_REST_DAYS": row_upper.get('AWAY_REST_DAYS', 2)
         }
         
         X_input = {}

@@ -284,7 +284,7 @@ def load_latest_features():
     return team_latest_home_stats, team_latest_away_stats
 
 def predict_upcoming_games():
-    print(f"🚀 啟動 NBA {len(ALL_MODELS)}神聯軍全預測系統！ (神級權重封印版)")
+    print(f"🚀 啟動 NBA {len(ALL_MODELS)}神聯軍全預測系統！ (神級防呆版)")
     
     if not os.path.exists(UPCOMING_CSV):
         print("❌ 找不到今日賽程 (upcoming_games.csv)！今日可能無賽事。")
@@ -319,8 +319,8 @@ def predict_upcoming_games():
     print(f"\n🎯 今日共有 {len(upcoming_df)} 場賽事，開始進行 AI 全面分析...\n" + "="*60)
     
     for _, row in upcoming_df.iterrows():
-        # 🔥 強制將 upcoming_df 單列的欄位全部轉為大寫，完美解決大小寫匹配 Bug
-        row_upper = {str(k).upper(): v for k, v in row.items()}
+        # 🔥 強制將欄位名稱去空白並轉大寫 (防禦隱形空白殺手)
+        row_upper = {str(k).strip().upper(): v for k, v in row.items()}
         
         home_team = row_upper.get('HOME_TEAM')
         away_team = row_upper.get('AWAY_TEAM')
@@ -330,14 +330,20 @@ def predict_upcoming_games():
         home_features = home_stats_dict.get(home_team, {})
         away_features = away_stats_dict.get(away_team, {})
         
-        # 🎯 精準抓取今日讓分盤口數字 (嚴格從 upcoming_games.csv 抓，不依賴歷史特徵)
-        game_line = row_upper.get('TW_SPREAD', row_upper.get('TW_SPREAD_SCORE', '未開盤'))
-        if pd.isna(game_line) or str(game_line).strip() == '':
-            game_line = '未開盤'
+        # 🎯 擴大搜尋範圍，精準抓取維加斯讓分盤口 VEGAS_SPREAD
+        possible_spread_cols = ['VEGAS_SPREAD', 'TW_SPREAD_SCORE', 'TW_SPREAD', 'SPREAD', 'LINE']
+        game_line = '未開盤'
+        for col in possible_spread_cols:
+            if col in row_upper:
+                val = row_upper[col]
+                # 確保不是空值、不是 nan 字串
+                if pd.notna(val) and str(val).strip() not in ['', 'nan', 'NaN', 'None']:
+                    game_line = str(val).strip()
+                    break
         
         today_context = {
-            "HOME_IS_B2B": 1 if row_upper.get('HOME_IS_B2B', False) else 0,
-            "AWAY_IS_B2B": 1 if row_upper.get('AWAY_IS_B2B', False) else 0,
+            "HOME_IS_B2B": 1 if str(row_upper.get('HOME_IS_B2B', 'False')).strip().lower() == 'true' else 0,
+            "AWAY_IS_B2B": 1 if str(row_upper.get('AWAY_IS_B2B', 'False')).strip().lower() == 'true' else 0,
             "HOME_REST_DAYS": row_upper.get('HOME_REST_DAYS', 2), 
             "AWAY_REST_DAYS": row_upper.get('AWAY_REST_DAYS', 2)
         }
@@ -368,7 +374,7 @@ def predict_upcoming_games():
             model_obj = models[m_name]
             prob = model_obj.predict_proba(X_df)[0]
             
-            # 🔥 防呆 4：動態尋找主隊或1的索引，避免 XGBoost 字母排序反轉
+            # 🔥 防呆 4：動態尋找主隊或 1 的索引，避免 XGBoost 字母排序反轉
             classes = list(model_obj.classes_)
             if home_team in classes:
                 home_idx = classes.index(home_team)
