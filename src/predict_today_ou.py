@@ -42,11 +42,11 @@ def load_ou_models_config():
 ALL_MODELS = load_ou_models_config()
 
 # ==========================================
-# 🥇 賽後自動結算系統 (直連資料庫 games 表格，結算並回填盤口)
+# 🥇 賽後自動結算系統 (精準對獎引擎 - 大小分版)
 # ==========================================
 def settle_past_predictions():
     print("\n" + "="*60)
-    print("🔄 啟動賽後自動結算系統 (啟動資料庫 games 表格深度挖掘)...")
+    print("🔄 啟動賽後自動結算系統 (精準對獎引擎)...")
     
     if not os.path.exists(OUTPUT_PREDICTION):
         print("   ℹ️ 尚未產生任何大小分預測紀錄檔，跳過結算。")
@@ -55,7 +55,7 @@ def settle_past_predictions():
     # 讀取預測紀錄
     preds_df = pd.read_csv(OUTPUT_PREDICTION)
     
-    # 若沒有 Is_Win 或 Line 欄位，自動加上
+    # 初始化防呆欄位
     if 'Is_Win' not in preds_df.columns:
         preds_df['Is_Win'] = np.nan
     if 'Line' not in preds_df.columns:
@@ -69,48 +69,27 @@ def settle_past_predictions():
         print("   ✅ 所有歷史預測皆已結算且盤口完整！")
         return
 
-    # 🚀 直接連線資料庫讀取 games 表格 (最準確的原始來源)
-    actual_results = {}
+    # 🚀 步驟 1：只從資料庫抽取「比分」與「備用大小分盤口」
+    actual_scores = {}
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
             games_df = pd.read_sql("SELECT * FROM games", conn)
             conn.close()
             
-            # 🔥 防呆 1：強制將資料庫欄位轉小寫，避免 KeyError
+            # 強制將資料庫欄位轉小寫
             games_df.columns = [c.lower() for c in games_df.columns]
-            
-            # 統一日期格式
-            games_df['DATE_STR'] = pd.to_datetime(games_df['game_date']).dt.strftime('%Y-%m-%d')
+            games_df['date_str'] = pd.to_datetime(games_df['game_date']).dt.strftime('%Y-%m-%d')
             
             for _, row in games_df.iterrows():
-                matchup = f"{row['away_team']} @ {row['home_team']}"
-                key = f"{matchup}_{row['DATE_STR']}"
+                matchup = f"{row.get('away_team')} @ {row.get('home_team')}"
+                key = f"{matchup}_{row['date_str']}"
                 
-                ou_winner = None
-                try:
-                    # 🔥 防呆 2：安全轉換數字，避免空字串轉 float 崩潰
-                    home_score = float(row.get('home_score', 0))
-                    away_score = float(row.get('away_score', 0))
-                    # 👇 依指示將資料庫欄位精準改為 tw_total_score
-                    tw_total = float(row.get('tw_total_score', 0))
-                    
-                    if home_score > 0 and away_score > 0 and tw_total > 0:
-                        total_pts = home_score + away_score
-                        # 🔥 防呆 3：正確處理走水 (剛好等於盤口)
-                        if total_pts > tw_total:
-                            ou_winner = 'OVER'
-                        elif total_pts < tw_total:
-                            ou_winner = 'UNDER'
-                        else:
-                            ou_winner = None # 走水不計勝負
-                except Exception:
-                    pass
-
-                actual_results[key] = {
-                    'ou_winner': ou_winner,
-                    # 👇 回填時也確保抓取正確的 tw_total_score
-                    'ou_line': row.get('tw_total_score')
+                # 安全抽取數值 (注意：大小分用 tw_total_score 或 vegas_total)
+                actual_scores[key] = {
+                    'h_score': pd.to_numeric(row.get('home_score'), errors='coerce'),
+                    'a_score': pd.to_numeric(row.get('away_score'), errors='coerce'),
+                    'db_line': pd.to_numeric(row.get('tw_total_score', row.get('vegas_total')), errors='coerce')
                 }
         except Exception as e:
             print(f"   ⚠️ 讀取資料庫 games 表格時發生錯誤: {e}")
@@ -121,10 +100,13 @@ def settle_past_predictions():
     settled_count = 0
     fixed_line_count = 0
     
-    # 開始配對並結算
+    # 🚀 步驟 2：結合 CSV 的盤口進行派彩
     for idx, row in preds_df.iterrows():
-        # 如果勝負已結算 且 盤口也抓到了，就跳過
-        if pd.notna(row.get('Is_Win')) and str(row.get('Line', '')).strip() not in ['', 'nan', 'NaN', '未開盤', 'None']:
+        current_line = str(row.get('Line', '')).strip()
+        is_win_val = row.get('Is_Win')
+        
+        # 如果已經結算過，且盤口也不是未開盤，就跳過
+        if pd.notna(is_win_val) and current_line not in ['', 'nan', 'NaN', '未開盤', 'None']:
             continue
 
         try:
@@ -133,7 +115,7 @@ def settle_past_predictions():
             pred_date_str = str(row['Game_Date']).strip()
 
         key = f"{row['Matchup']}_{pred_date_str}"
-        matched_data = actual_results.get(key)
+        matched_data = actual_scores.get(key)
 
         # 時區容錯：時區問題找前後一天
         if not matched_data:
@@ -141,30 +123,60 @@ def settle_past_predictions():
                 pred_dt = pd.to_datetime(pred_date_str)
                 key_prev = f"{row['Matchup']}_{(pred_dt - pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
                 key_next = f"{row['Matchup']}_{(pred_dt + pd.Timedelta(days=1)).strftime('%Y-%m-%d')}"
-                
-                matched_data = actual_results.get(key_prev) or actual_results.get(key_next)
+                matched_data = actual_scores.get(key_prev) or actual_scores.get(key_next)
             except:
                 pass
 
         # 如果成功配對到賽果，進行結算與回填
         if matched_data:
-            current_line = str(row.get('Line', '')).strip()
+            h_score = matched_data['h_score']
+            a_score = matched_data['a_score']
             
-            # 結算勝負
-            if pd.isna(row.get('Is_Win')) and matched_data['ou_winner']:
-                preds_df.at[idx, 'Is_Win'] = 1 if row['Predicted_OU'] == matched_data['ou_winner'] else 0
-                settled_count += 1
+            # 🔥 防禦機制：如果資料庫裡這場比賽的比分是 NaN 或 0，代表根本還沒打完，直接跳過！
+            if pd.isna(h_score) or pd.isna(a_score) or h_score == 0 or a_score == 0:
+                continue
                 
-            # 🔥 自動回填盤口機制：如果當初沒抓到盤口，結算時順便從資料庫補回去
-            if current_line in ['', 'nan', 'NaN', '未開盤', 'None'] and pd.notna(matched_data['ou_line']):
-                preds_df.at[idx, 'Line'] = matched_data['ou_line']
+            # 🎯 決定用來對獎的大小分盤口數字
+            final_line = np.nan
+            try:
+                # 優先使用 CSV 當時抓到的真實盤口
+                if current_line not in ['', 'nan', 'NaN', '未開盤', 'None']:
+                    final_line = float(current_line)
+                # 如果 CSV 沒抓到，才去用資料庫補的盤口
+                elif pd.notna(matched_data['db_line']):
+                    final_line = float(matched_data['db_line'])
+            except:
+                pass
+
+            # 如果連資料庫裡都沒有盤口數字，跳過
+            if pd.isna(final_line):
+                continue
+                
+            # 如果當初沒盤口，現在用資料庫補上了，寫入 CSV
+            if current_line in ['', 'nan', 'NaN', '未開盤', 'None'] and pd.notna(final_line):
+                preds_df.at[idx, 'Line'] = final_line
                 fixed_line_count += 1
+            
+            # 🏆 派彩結算邏輯
+            if pd.isna(is_win_val):
+                total_pts = h_score + a_score
+                if total_pts > final_line:
+                    ou_winner = 'OVER'
+                elif total_pts < final_line:
+                    ou_winner = 'UNDER'
+                else:
+                    ou_winner = "PUSH" # 走水
+                    
+                # 只有在非走水的情況下才判定勝負
+                if ou_winner != "PUSH":
+                    preds_df.at[idx, 'Is_Win'] = 1 if str(row['Predicted_OU']).strip() == ou_winner else 0
+                    settled_count += 1
 
     if settled_count > 0 or fixed_line_count > 0:
         preds_df.to_csv(OUTPUT_PREDICTION, index=False, encoding='utf-8-sig')
-        print(f"   💰 挖掘完成！結算了 {settled_count} 筆賽果，並成功從資料庫搶救回填了 {fixed_line_count} 筆歷史盤口數字。")
+        print(f"   💰 結算完成！成功派彩了 {settled_count} 筆賽果，並回填了 {fixed_line_count} 筆盤口數字。")
     else:
-        print("   ⏳ 尚無最新賽果可供結算 (比賽可能還沒打完，或遇到走水/未開盤)。")
+        print("   ⏳ 尚無最新賽果可供結算 (提示：請確認你是否已經更新了包含昨日『完賽比分』的資料庫)。")
     print("="*60)
 
 # ==========================================
