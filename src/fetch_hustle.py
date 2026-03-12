@@ -70,14 +70,14 @@ def fetch_single_game_hustle_cffi(gid):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 使用 curl_cffi 完美偽裝成 Chrome 110，避開 Cloudflare 阻擋
+            # 🔥 升級：使用 curl_cffi 完美偽裝成較新的 Chrome 120，避開 Cloudflare 阻擋
             response = cffi_requests.get(
                 url, 
                 params=params, 
                 headers=headers, 
                 proxies=PROXY_DICT, 
                 timeout=20,
-                impersonate="chrome110"
+                impersonate="chrome120"
             )
             
             if response.status_code != 200:

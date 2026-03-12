@@ -66,14 +66,14 @@ def fetch_single_game_pbp(gid):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 加入 proxies=PROXY_DICT 透過代理伺服器請求
+            # 🔥 升級：使用 curl_cffi 完美偽裝成較新的 Chrome 120，避開 Cloudflare 阻擋
             response = cffi_requests.get(
                 url, 
                 params=params, 
                 headers=headers,
                 proxies=PROXY_DICT, 
                 timeout=20,
-                impersonate="chrome110" 
+                impersonate="chrome120" 
             )
             
             if response.status_code != 200:

@@ -1,4 +1,5 @@
-import requests
+# 🔥 將原本的 import requests 替換為 curl_cffi，全面升級偽裝能力
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 import sqlite3
 import time
@@ -237,7 +238,8 @@ def crawl_odds_incremental():
         
         try:
             # 由於已設定 os.environ['HTTPS_PROXY']，這裡的 requests 會自動走 Webshare 代理
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            # 🔥 加上 impersonate="chrome120" 完美偽裝瀏覽器
+            resp = requests.get(url, headers=HEADERS, timeout=15, impersonate="chrome120")
             if resp.status_code != 200: 
                 print(f"失敗 ({resp.status_code})")
                 continue

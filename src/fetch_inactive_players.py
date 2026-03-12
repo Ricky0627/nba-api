@@ -17,6 +17,57 @@ except ImportError:
     HAS_V3 = False
     print("⚠️ 警告: 你的 nba_api 版本較舊，可能無法支援 V3。")
 
+# ==========================================
+# 🔥 新增：強制注入 curl_cffi 突破 Cloudflare 防線
+# ==========================================
+from curl_cffi import requests as cffi_requests
+from nba_api.stats.library.http import NBAStatsHTTP
+
+def custom_send_api_request(url, parameters, headers, timeout=None, proxies=None):
+    """攔截 nba_api 的底層請求，改用 curl_cffi 進行 TLS 指紋偽裝"""
+    
+    # 處理 Proxy 格式
+    cffi_proxies = None
+    if proxies:
+        cffi_proxies = proxies
+    elif os.environ.get('HTTP_PROXY'):
+        cffi_proxies = {
+            "http": os.environ.get('HTTP_PROXY'),
+            "https": os.environ.get('HTTPS_PROXY')
+        }
+
+    # 使用 curl_cffi 發送偽裝請求
+    resp = cffi_requests.get(
+        url, 
+        params=parameters, 
+        headers=headers, 
+        proxies=cffi_proxies,
+        timeout=timeout or 30,
+        impersonate="chrome120"  # 👈 偽裝成較新的 Chrome 版本
+    )
+    
+    # 建立一個假裝是原生 requests.Response 的物件，讓 nba_api 能正常解析
+    class DummyResponse:
+        def __init__(self, r):
+            self.status_code = r.status_code
+            self.url = r.url
+            self.text = r.text
+            self._json = None
+            try:
+                self._json = r.json()
+            except:
+                pass
+        def json(self): 
+            if self._json is None:
+                raise ValueError("JSON decode error")
+            return self._json
+            
+    return DummyResponse(resp)
+
+# 執行覆寫：讓 nba_api 全面改走我們的偽裝通道
+NBAStatsHTTP.send_api_request = custom_send_api_request
+# ==========================================
+
 # 強制忽略所有警告
 warnings.filterwarnings("ignore")
 

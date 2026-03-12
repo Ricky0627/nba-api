@@ -1,6 +1,7 @@
 import pandas as pd
 import os
-import requests
+# 🔥 將原本的 import requests 替換為 curl_cffi，全面升級偽裝能力
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pytz import timezone
@@ -85,7 +86,8 @@ def scrape_playsport_odds(target_date_tw_str):
     TEAM_MAPPING = {"湖人": "LAL", "勇士": "GSW", "金塊": "DEN", "塞爾提": "BOS", "公鹿": "MIL", "七六人": "PHI", "76人": "PHI", "太陽": "PHX", "快艇": "LAC", "熱火": "MIA", "尼克": "NYK", "騎士": "CLE", "獨行俠": "DAL", "小牛": "DAL", "灰熊": "MEM", "國王": "SAC", "老鷹": "ATL", "溜馬": "IND", "暴龍": "TOR", "公牛": "CHI", "雷霆": "OKC", "灰狼": "MIN", "爵士": "UTA", "拓荒者": "POR", "魔術": "ORL", "巫師": "WAS", "火箭": "HOU", "馬刺": "SAS", "活塞": "DET", "籃網": "BKN", "鵜鶘": "NOP", "黃蜂": "CHA"}
     try:
         toggle_proxy(False) # 爬運彩不需要 Proxy
-        r = requests.get(url, headers=headers, timeout=15)
+        # 🔥 加上 impersonate 參數偽裝成真實瀏覽器
+        r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120")
         soup = BeautifulSoup(r.content, 'html.parser')
         rows = soup.find_all('tr', attrs={'gameid': True})
         i = 0
@@ -140,11 +142,14 @@ def scrape_espn_injuries():
     r = None
     try:
         toggle_proxy(True) # 嘗試用 Proxy 抓 ESPN
-        r = requests.get(url, headers=headers, timeout=10)
+        # 🔥 加上 impersonate 參數偽裝成真實瀏覽器
+        r = requests.get(url, headers=headers, timeout=10, impersonate="chrome120")
     except:
         print("   🔄 Proxy 連線 ESPN 失敗，自動切換為直連...")
         toggle_proxy(False)
-        try: r = requests.get(url, headers=headers, timeout=10)
+        try: 
+            # 🔥 加上 impersonate 參數偽裝成真實瀏覽器
+            r = requests.get(url, headers=headers, timeout=10, impersonate="chrome120")
         except: return injuries
 
     if r and r.status_code == 200:
@@ -172,7 +177,8 @@ def get_cdn_schedule():
     }
     toggle_proxy(False) # CDN 絕對不要掛 Proxy，直連最快！
     try:
-        r = requests.get(url, headers=headers, timeout=15)
+        # 🔥 加上 impersonate 參數偽裝成真實瀏覽器
+        r = requests.get(url, headers=headers, timeout=15, impersonate="chrome120")
         r.raise_for_status()
         return r.json()
     except Exception as e:
