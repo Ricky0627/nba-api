@@ -12,54 +12,32 @@ from urllib3.exceptions import ProtocolError
 from tqdm import tqdm
 
 # ==========================================
-# 🔥 新增：強制注入 curl_cffi 突破 Cloudflare 防線
+# 🔥 新增：強制注入 curl_cffi 突破 Cloudflare 防線 (最終防彈版)
 # ==========================================
 from curl_cffi import requests as cffi_requests
-from nba_api.stats.library.http import NBAStatsHTTP
+import nba_api.stats.library.http as nba_http
+import os
 
-def custom_send_api_request(url, parameters, headers, timeout=None, proxies=None, **kwargs):
-    """攔截 nba_api 的底層請求，改用 curl_cffi 進行 TLS 指紋偽裝"""
+def patched_requests_get(*args, **kwargs):
+    """直接攔截 nba_api 底層的 requests.get，無痛套用 curl_cffi 偽裝"""
     
-    # 處理 Proxy 格式
-    cffi_proxies = None
-    if proxies:
-        cffi_proxies = proxies
-    elif os.environ.get('HTTP_PROXY'):
-        cffi_proxies = {
-            "http": os.environ.get('HTTP_PROXY'),
-            "https": os.environ.get('HTTPS_PROXY')
-        }
-
-    # 使用 curl_cffi 發送偽裝請求 (接收 kwargs 避免 nba_api 傳入預期外的參數報錯)
-    resp = cffi_requests.get(
-        url, 
-        params=parameters, 
-        headers=headers, 
-        proxies=cffi_proxies,
-        timeout=timeout or 30,
-        impersonate="chrome120"  
-    )
+    # 強制戴上 Chrome 120 的面具
+    kwargs['impersonate'] = "chrome120"
     
-    # 建立一個假裝是原生 requests.Response 的物件，讓 nba_api 能正常解析
-    class DummyResponse:
-        def __init__(self, r):
-            self.status_code = r.status_code
-            self.url = r.url
-            self.text = r.text
-            self._json = None
-            try:
-                self._json = r.json()
-            except:
-                pass
-        def json(self): 
-            if self._json is None:
-                raise ValueError("JSON decode error")
-            return self._json
+    # 確保自動套用 GitHub Actions 裡的 Proxy
+    if not kwargs.get('proxies'):
+        proxy_url = os.environ.get('HTTP_PROXY')
+        if proxy_url:
+            kwargs['proxies'] = {
+                "http": proxy_url,
+                "https": proxy_url
+            }
             
-    return DummyResponse(resp)
+    # 原封不動把所有參數交給 curl_cffi 發射！
+    return cffi_requests.get(*args, **kwargs)
 
-# 執行覆寫：讓 nba_api 全面改走我們的偽裝通道
-NBAStatsHTTP.send_api_request = custom_send_api_request
+# 執行掉包：將 nba_api 內的 requests.get 替換成我們的武裝版
+nba_http.requests.get = patched_requests_get
 # ==========================================
 
 # 忽略 NBA API 的警告訊息
