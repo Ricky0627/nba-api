@@ -17,7 +17,7 @@ from tqdm import tqdm
 from curl_cffi import requests as cffi_requests
 from nba_api.stats.library.http import NBAStatsHTTP
 
-def custom_send_api_request(url, parameters, headers, timeout=None, proxies=None):
+def custom_send_api_request(url, parameters, headers, timeout=None, proxies=None, **kwargs):
     """攔截 nba_api 的底層請求，改用 curl_cffi 進行 TLS 指紋偽裝"""
     
     # 處理 Proxy 格式
@@ -30,14 +30,14 @@ def custom_send_api_request(url, parameters, headers, timeout=None, proxies=None
             "https": os.environ.get('HTTPS_PROXY')
         }
 
-    # 使用 curl_cffi 發送偽裝請求
+    # 使用 curl_cffi 發送偽裝請求 (接收 kwargs 避免 nba_api 傳入預期外的參數報錯)
     resp = cffi_requests.get(
         url, 
         params=parameters, 
         headers=headers, 
         proxies=cffi_proxies,
         timeout=timeout or 30,
-        impersonate="chrome120"  # 👈 偽裝成較新的 Chrome 版本
+        impersonate="chrome120"  
     )
     
     # 建立一個假裝是原生 requests.Response 的物件，讓 nba_api 能正常解析
