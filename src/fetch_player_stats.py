@@ -12,32 +12,56 @@ from urllib3.exceptions import ProtocolError
 from tqdm import tqdm
 
 # ==========================================
-# 🔥 新增：強制注入 curl_cffi 突破 Cloudflare 防線 (最終防彈版)
+# 🔥 終極防護罩：底層 requests 核心替換 (防彈版)
 # ==========================================
-from curl_cffi import requests as cffi_requests
 import nba_api.stats.library.http as nba_http
 import os
 
-def patched_requests_get(*args, **kwargs):
-    """直接攔截 nba_api 底層的 requests.get，無痛套用 curl_cffi 偽裝"""
-    
-    # 強制戴上 Chrome 120 的面具
-    kwargs['impersonate'] = "chrome120"
-    
-    # 確保自動套用 GitHub Actions 裡的 Proxy
-    if not kwargs.get('proxies'):
-        proxy_url = os.environ.get('HTTP_PROXY')
-        if proxy_url:
-            kwargs['proxies'] = {
-                "http": proxy_url,
-                "https": proxy_url
-            }
+class CFFIMockRequests:
+    @staticmethod
+    def get(url, **kwargs):
+        return CFFIMockRequests._cffi_get(url, **kwargs)
+        
+    class Session:
+        def get(self, url, **kwargs):
+            return CFFIMockRequests._cffi_get(url, **kwargs)
             
-    # 原封不動把所有參數交給 curl_cffi 發射！
-    return cffi_requests.get(*args, **kwargs)
+    @staticmethod
+    def _cffi_get(url, **kwargs):
+        kwargs['impersonate'] = "chrome120"
+        
+        if 'proxies' not in kwargs and os.environ.get('HTTP_PROXY'):
+            kwargs['proxies'] = {
+                "http": os.environ.get('HTTP_PROXY'),
+                "https": os.environ.get('HTTPS_PROXY')
+            }
+        
+        from curl_cffi import requests as cffi_requests
+        from requests.exceptions import ReadTimeout, ConnectionError
+        
+        try:
+            resp = cffi_requests.get(url, **kwargs)
+        except Exception as e:
+            if "timeout" in str(e).lower(): raise ReadTimeout(e)
+            raise ConnectionError(e)
+            
+        class DummyResponse:
+            def __init__(self, r):
+                self.status_code = r.status_code
+                self.url = r.url
+                self.text = r.text
+                self.content = r.content
+                self.headers = getattr(r, 'headers', {})
+                self._json = None
+                try: self._json = r.json()
+                except: pass
+            def json(self):
+                if self._json is None: raise ValueError("JSON decode error")
+                return self._json
+                
+        return DummyResponse(resp)
 
-# 執行掉包：將 nba_api 內的 requests.get 替換成我們的武裝版
-nba_http.requests.get = patched_requests_get
+nba_http.requests = CFFIMockRequests
 # ==========================================
 
 # 忽略警告
